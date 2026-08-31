@@ -50,7 +50,7 @@ export function isEntityVisibleQuery(world, entityId) {
     visited.add(surfaceId);
     const surface = world.surfaces[surfaceId];
     if (!surface) throw fail("SURFACE_NOT_FOUND", `Surface ${surfaceId} was not found`, { surfaceId });
-    if (surface.localVisibility === "hidden") return false;
+    if (!isSurfaceLocallyVisible(world, surface)) return false;
     if (surface.hostEntityId === null) return true;
     const host = world.entities[surface.hostEntityId];
     if (!host) throw fail("ENTITY_NOT_FOUND", `Entity ${surface.hostEntityId} was not found`, { entityId: surface.hostEntityId });
@@ -59,9 +59,28 @@ export function isEntityVisibleQuery(world, entityId) {
   return true;
 }
 
+export function isSurfaceLocallyVisible(world, surfaceOrId) {
+  const surface = typeof surfaceOrId === "string" ? world.surfaces[surfaceOrId] : surfaceOrId;
+  if (!surface) throw fail("SURFACE_NOT_FOUND", `Surface ${surfaceOrId} was not found`, { surfaceId: surfaceOrId });
+  if (surface.kind === "sheet-inside" || surface.kind === "sheet-outer-top" || surface.kind === "sheet-outer-bottom") {
+    const host = world.entities[surface.hostEntityId];
+    if (!host || host.kind !== "sheet") return false;
+    if (surface.kind === "sheet-inside") return host.state === "open";
+    if (surface.kind === "sheet-outer-top") return host.state === "closed";
+    return false;
+  }
+  if (surface.kind === "notebook-cover" || surface.kind === "notebook-spread") {
+    const host = world.entities[surface.hostEntityId];
+    if (!host || host.kind !== "notebook") return false;
+    if (surface.kind === "notebook-cover") return host.state === "closed";
+    return host.state === "open" && host.spreads?.[host.activeSpreadIndex]?.surfaceId === surface.id;
+  }
+  return surface.localVisibility === "visible";
+}
+
 export function isSurfaceVisible(world, surfaceId) {
   const surface = world.surfaces[surfaceId];
   if (!surface) throw fail("SURFACE_NOT_FOUND", `Surface ${surfaceId} was not found`, { surfaceId });
-  if (surface.localVisibility === "hidden") return false;
+  if (!isSurfaceLocallyVisible(world, surface)) return false;
   return surface.hostEntityId === null || isEntityVisibleQuery(world, surface.hostEntityId);
 }

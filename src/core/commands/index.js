@@ -4,7 +4,7 @@ import { aabbIntersects, isFinitePoint, isSimplePolygon, normalizeClosedContour,
 import { getEntityWorldTransformQuery, getSurfaceWorldMatrixQuery, isEntityVisibleQuery, isSurfaceVisible } from "../queries.js";
 import { validateWorldState } from "../validate.js";
 
-const COMMANDS = new Set(["createEntity", "deleteEntity", "moveEntity", "moveEntityInWorld", "setEntityTransform", "bringEntityToFront", "setSurfaceVisibility", "createDrawing", "deleteDrawing", "addStroke", "removeStroke", "createCutout", "createCat", "createWearableCutout", "attachWearable", "detachWearable"]);
+const COMMANDS = new Set(["createEntity", "deleteEntity", "moveEntity", "moveEntityInWorld", "setEntityTransform", "bringEntityToFront", "setSurfaceVisibility", "createDrawing", "deleteDrawing", "addStroke", "removeStroke", "createCutout", "createCat", "createWearableCutout", "attachWearable", "detachWearable", "holdEntity", "releaseHeldEntity", "createSheet", "toggleSheet", "setSheetState", "createNotebook", "setNotebookState", "setActiveSpread"]);
 const cloneTransform = (value) => ({ x: value.x, y: value.y, rotation: value.rotation, scale: value.scale });
 
 function assertId(value, name) {
@@ -86,7 +86,7 @@ function createEntity(world, command) {
     if (ids.has(surface.id) || world.entities[surface.id] || world.surfaces[surface.id]) throw fail("DUPLICATE_ID", `ID ${surface.id} already exists`, { id: surface.id });
     ids.add(surface.id);
     if (surface.hostEntityId !== entity.id) throw fail("INVALID_REFERENCE", "Owned surface must reference the new entity", { surfaceId: surface.id, hostEntityId: surface.hostEntityId });
-    if (surface.kind !== "generic" && surface.kind !== "cat-attachments") throw fail("INVALID_REFERENCE", "Invalid owned surface kind", { kind: surface.kind });
+    if (!["generic", "cat-attachments", "sheet-inside", "sheet-outer-top", "sheet-outer-bottom", "notebook-cover", "notebook-spread"].includes(surface.kind)) throw fail("INVALID_REFERENCE", "Invalid owned surface kind", { kind: surface.kind });
     assertTransform(world, surface.transform);
     if (!isSimplePolygon(surface.placementArea, world.rules.geometryEpsilon)) throw fail("INVALID_POLYGON", "placementArea must be a simple non-degenerate polygon", { surfaceId: surface.id });
     if (surface.localVisibility !== "visible" && surface.localVisibility !== "hidden") throw fail("INVALID_REFERENCE", "Invalid surface visibility", { value: surface.localVisibility });
@@ -100,6 +100,48 @@ function createEntity(world, command) {
   };
   return { world: next, events: [{ type: "entityCreated", entityId: entity.id }] };
 }
+
+const rectangle = (width, height) => [{ x: 0, y: 0 }, { x: width, y: 0 }, { x: width, y: height }, { x: 0, y: height }];
+const zeroTransform = () => ({ x: 0, y: 0, rotation: 0, scale: 1 });
+function drawingInput(command, role, id, width, height) {
+  const supplied = command.drawings?.[role] ?? command[`${role}Drawing`];
+  return supplied ?? { id, width, height, background: command.colors?.[role] ?? "#f7e7bd", strokes: [] };
+}
+function addDrawingsAtomically(world, drawings) {
+  let next = world; const events = [];
+  for (const drawing of drawings) { const result = createDrawing(next, { drawing }); next = result.world; events.push(...result.events); }
+  return { world: next, events };
+}
+function createSheet(world, command) {
+  const sheetId = command.sheetId ?? command.entityId; assertId(sheetId, "sheetId");
+  const ids = { inside: command.insideSurfaceId, outerTop: command.outerTopSurfaceId, outerBottom: command.outerBottomSurfaceId };
+  const drawingIds = { inside: command.insideDrawingId, outerTop: command.outerTopDrawingId, outerBottom: command.outerBottomDrawingId };
+  for (const [key, value] of Object.entries({ ...ids, ...Object.fromEntries(Object.entries(drawingIds).map(([k,v]) => [`${k}Drawing`, v])) })) assertId(value, key);
+  const width = command.width ?? 320, height = command.height ?? 220;
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) throw fail("INVALID_SHEET", "Sheet dimensions are invalid");
+  const madeDrawings = addDrawingsAtomically(world, Object.keys(drawingIds).map((role) => drawingInput(command, role, drawingIds[role], role === "inside" ? width : width / 2, height)));
+  const entity = { id: sheetId, kind: "sheet", label: command.label ?? "Складной лист", state: command.state ?? "closed", insideSurfaceId: ids.inside, outerTopSurfaceId: ids.outerTop, outerBottomSurfaceId: ids.outerBottom, width, height, surfaceId: command.targetSurfaceId ?? world.table.surfaceId, transform: command.transform ?? command.worldTransform, zIndex: command.zIndex ?? nextZIndex(world, command.targetSurfaceId ?? world.table.surfaceId) };
+  const surfaces = [["inside", "sheet-inside"], ["outerTop", "sheet-outer-top"], ["outerBottom", "sheet-outer-bottom"]].map(([role, kind]) => ({ id: ids[role], kind, hostEntityId: sheetId, drawingId: drawingIds[role], transform: role === "inside" ? zeroTransform() : { x: width / 2, y: 0, rotation: 0, scale: 1 }, placementArea: rectangle(role === "inside" ? width : width / 2, height), localVisibility: "visible" }));
+  const made = createEntity(madeDrawings.world, { entity, surfaces });
+  return { world: made.world, events: [...madeDrawings.events, ...made.events, { type: "sheetCreated", sheetId }] };
+}
+function setSheetState(world, command) { const sheet = requireEntity(world, command.sheetId ?? command.entityId); if (sheet.kind !== "sheet") throw fail("NOT_A_SHEET", "Entity is not a sheet", { entityId: sheet.id }); if (!["open", "closed"].includes(command.state)) throw fail("INVALID_SHEET", "Invalid sheet state"); if (!isEntityVisibleQuery(world, sheet.id)) throw fail("HOST_NOT_VISIBLE", "Sheet is not visible"); if (sheet.state === command.state) return { world, events: [] }; const updated = { ...sheet, state: command.state }; return { world: { ...world, entities: { ...world.entities, [sheet.id]: updated } }, events: [{ type: "sheetStateChanged", sheetId: sheet.id, previousState: sheet.state, state: updated.state, newState: updated.state }] }; }
+function createNotebook(world, command) {
+  const notebookId = command.notebookId ?? command.entityId; assertId(notebookId, "notebookId"); assertId(command.coverSurfaceId, "coverSurfaceId"); assertId(command.coverDrawingId, "coverDrawingId");
+  if (!Array.isArray(command.spreads) || command.spreads.length === 0) throw fail("INVALID_NOTEBOOK", "Notebook needs at least one spread");
+  const width = command.width ?? 420, height = command.height ?? 260;
+  const drawingSpecs = [{ role: "cover", id: command.coverDrawingId }, ...command.spreads.map((s) => ({ role: s.id, id: s.drawingId, supplied: s.drawing }))];
+  for (const spread of command.spreads) { assertId(spread?.id, "spreadId"); assertId(spread?.surfaceId, "surfaceId"); assertId(spread?.drawingId, "drawingId"); }
+  const madeDrawings = addDrawingsAtomically(world, drawingSpecs.map((s) => s.supplied ?? command.drawings?.[s.role] ?? { id: s.id, width, height, background: s.role === "cover" ? "#b96955" : "#fff7de", strokes: [] }));
+  const state = command.state ?? "closed", activeSpreadIndex = command.activeSpreadIndex ?? 0;
+  const spreads = command.spreads.map(({ id, surfaceId, drawingId }) => ({ id, surfaceId, drawingId }));
+  const entity = { id: notebookId, kind: "notebook", label: command.label ?? "Тетрадь-дом", state, coverSurfaceId: command.coverSurfaceId, activeSpreadIndex, spreads, width, height, surfaceId: command.targetSurfaceId ?? world.table.surfaceId, transform: command.transform ?? command.worldTransform, zIndex: command.zIndex ?? nextZIndex(world, command.targetSurfaceId ?? world.table.surfaceId) };
+  const surfaces = [{ id: command.coverSurfaceId, kind: "notebook-cover", hostEntityId: notebookId, drawingId: command.coverDrawingId, transform: zeroTransform(), placementArea: rectangle(width, height), localVisibility: "visible" }, ...spreads.map((s) => ({ id: s.surfaceId, kind: "notebook-spread", hostEntityId: notebookId, drawingId: s.drawingId, transform: zeroTransform(), placementArea: rectangle(width, height), localVisibility: "visible" }))];
+  const made = createEntity(madeDrawings.world, { entity, surfaces }); return { world: made.world, events: [...madeDrawings.events, ...made.events, { type: "notebookCreated", notebookId }] };
+}
+function requireNotebook(world, command) { const notebook = requireEntity(world, command.notebookId ?? command.entityId); if (notebook.kind !== "notebook") throw fail("NOT_A_NOTEBOOK", "Entity is not a notebook", { entityId: notebook.id }); return notebook; }
+function setNotebookState(world, command) { const notebook = requireNotebook(world, command); if (!["open", "closed"].includes(command.state)) throw fail("INVALID_NOTEBOOK", "Invalid notebook state"); if (!isEntityVisibleQuery(world, notebook.id)) throw fail("HOST_NOT_VISIBLE", "Notebook is not visible"); if (notebook.state === command.state) return { world, events: [] }; const updated = { ...notebook, state: command.state }; return { world: { ...world, entities: { ...world.entities, [notebook.id]: updated } }, events: [{ type: "notebookStateChanged", notebookId: notebook.id, previousState: notebook.state, state: updated.state, newState: updated.state }] }; }
+function setActiveSpread(world, command) { const notebook = requireNotebook(world, command); const index = command.activeSpreadIndex ?? command.index; if (!Number.isInteger(index) || index < 0 || index >= notebook.spreads.length) throw fail("INVALID_SPREAD_INDEX", "Spread index is out of range", { index }); if (notebook.state !== "open" || !isEntityVisibleQuery(world, notebook.id)) throw fail("HOST_NOT_VISIBLE", "Open notebook is not visible"); if (index === notebook.activeSpreadIndex) return { world, events: [] }; const updated = { ...notebook, activeSpreadIndex: index }; return { world: { ...world, entities: { ...world.entities, [notebook.id]: updated } }, events: [{ type: "activeSpreadChanged", notebookId: notebook.id, previousIndex: notebook.activeSpreadIndex, activeSpreadIndex: index, newIndex: index }] }; }
 
 function requireTemplate(world, templateId) {
   const template = world.rules.templates?.[templateId];
@@ -176,6 +218,30 @@ function detachWearable(world, command) {
   return { world: { ...moved, entities: { ...moved.entities, [wearable.id]: updated } }, events: [{ type: "wearableDetached", wearableId: wearable.id, catId: wearable.attachment.catId }] };
 }
 
+function holdEntity(world, command) {
+  const entity = requireEntity(world, command.entityId), cat = requireEntity(world, command.catId);
+  if (cat.kind !== "cat") throw fail("NOT_A_CAT", "Entity is not a cat", { entityId: cat.id });
+  if (entity.id === cat.id || entity.attachment) throw fail("INVALID_ATTACHMENT", "Entity cannot be held", { entityId: entity.id });
+  if (!isEntityVisibleQuery(world, entity.id) || !isEntityVisibleQuery(world, cat.id)) throw fail("TARGET_NOT_VISIBLE", "Entity and cat must be visible");
+  const pose = command.worldTransform ?? getEntityWorldTransformQuery(world, entity.id), inverse = invertMatrix(getSurfaceWorldMatrixQuery(world, cat.attachmentSurfaceId), world.rules.geometryEpsilon);
+  const localPose = inverse && decomposeMatrix(multiplyMatrices(inverse, matrixFromTransform(pose)), world.rules.geometryEpsilon);
+  const template = world.rules.templates[cat.templateId], local = localPose && { ...localPose, x: template.viewBox.x + template.viewBox.width * .5, y: template.viewBox.y + template.viewBox.height * .72, scale: Math.min(localPose.scale, .65) };
+  if (!local) throw fail("INVALID_TRANSFORM", "Held transform cannot be represented locally");
+  requireSurface(world, cat.attachmentSurfaceId);
+  const updated = { ...entity, surfaceId: cat.attachmentSurfaceId, transform: cloneTransform(local), zIndex: nextZIndex(world, cat.attachmentSurfaceId), attachment: { kind: "held", catId: cat.id, zoneId: "paws", worldScaleBeforeHold: command.worldScaleBeforeHold ?? pose.scale } };
+  return { world: { ...world, entities: { ...world.entities, [entity.id]: updated } }, events: [{ type: "entityHeld", entityId: entity.id, catId: cat.id }] };
+}
+
+function releaseHeldEntity(world, command) {
+  const entity = requireEntity(world, command.entityId);
+  if (entity.attachment?.kind !== "held") throw fail("INVALID_ATTACHMENT", "Entity is not held", { entityId: entity.id });
+  const currentPose = command.worldTransform ?? getEntityWorldTransformQuery(world, entity.id), pose = { ...currentPose, scale: entity.attachment.worldScaleBeforeHold }, targetSurfaceId = command.targetSurfaceId;
+  const inverse = invertMatrix(getSurfaceWorldMatrixQuery(world, targetSurfaceId), world.rules.geometryEpsilon), local = inverse && decomposeMatrix(multiplyMatrices(inverse, matrixFromTransform(pose)), world.rules.geometryEpsilon);
+  if (!local) throw fail("INVALID_TRANSFORM", "Released transform cannot be represented locally");
+  const released = { ...entity, attachment: null }, moved = movedWorld({ ...world, entities: { ...world.entities, [entity.id]: released } }, released, targetSurfaceId, local, command.zPolicy ?? "front");
+  return { world: moved, events: [{ type: "entityReleased", entityId: entity.id, catId: entity.attachment.catId }] };
+}
+
 function cloneStroke(stroke) { return { ...stroke, points: stroke.points.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure ?? .5 })) }; }
 function assertDrawing(drawing) {
   assertId(drawing?.id, "drawingId");
@@ -197,7 +263,7 @@ function createDrawing(world, command) {
 function deleteDrawing(world, command) {
   assertId(command.drawingId, "drawingId"); const drawing = world.drawings[command.drawingId];
   if (!drawing) throw fail("DRAWING_NOT_FOUND", "Drawing was not found", { drawingId: command.drawingId });
-  if (Object.values(world.entities).some((e) => e.drawingId === drawing.id)) throw fail("DRAWING_IN_USE", "Drawing is referenced", { drawingId: drawing.id });
+  if (Object.values(world.entities).some((e) => e.drawingId === drawing.id) || Object.values(world.surfaces).some((s) => s.drawingId === drawing.id)) throw fail("DRAWING_IN_USE", "Drawing is referenced", { drawingId: drawing.id });
   const drawings = { ...world.drawings }; delete drawings[drawing.id];
   return { world: { ...world, drawings }, events: [{ type: "drawingChanged", drawingId: drawing.id, deleted: true }] };
 }
@@ -246,6 +312,14 @@ function execute(world, command) {
   if (command.type === "createWearableCutout") return createWearableCutout(world, command);
   if (command.type === "attachWearable") return attachWearable(world, command);
   if (command.type === "detachWearable") return detachWearable(world, command);
+  if (command.type === "holdEntity") return holdEntity(world, command);
+  if (command.type === "releaseHeldEntity") return releaseHeldEntity(world, command);
+  if (command.type === "createSheet") return createSheet(world, command);
+  if (command.type === "setSheetState") return setSheetState(world, command);
+  if (command.type === "toggleSheet") { const sheet = requireEntity(world, command.sheetId ?? command.entityId); if (sheet.kind !== "sheet") throw fail("NOT_A_SHEET", "Entity is not a sheet"); return setSheetState(world, { ...command, state: sheet.state === "open" ? "closed" : "open" }); }
+  if (command.type === "createNotebook") return createNotebook(world, command);
+  if (command.type === "setNotebookState") return setNotebookState(world, command);
+  if (command.type === "setActiveSpread") return setActiveSpread(world, command);
   if (command.type === "setSurfaceVisibility") {
     const surface = requireSurface(world, command.surfaceId);
     if (surface.kind !== "generic") throw fail("INVALID_REFERENCE", "Only generic surfaces can change visibility", { surfaceId: surface.id });
@@ -253,7 +327,7 @@ function execute(world, command) {
     return { world: { ...world, surfaces: { ...world.surfaces, [surface.id]: { ...surface, localVisibility: command.visibility } } }, events: [{ type: "surfaceVisibilityChanged", surfaceId: surface.id, visibility: command.visibility }] };
   }
   const entity = requireEntity(world, command.entityId);
-  if (entity.attachment && command.type !== "bringEntityToFront") throw fail("ENTITY_ATTACHED", "Detach wearable before moving it", { entityId: entity.id });
+  if (entity.attachment && command.type !== "bringEntityToFront") throw fail("ENTITY_ATTACHED", "Detach or release entity before moving it", { entityId: entity.id });
   if (command.type === "bringEntityToFront") {
     const siblings = Object.values(world.entities).filter((candidate) => candidate.surfaceId === entity.surfaceId && (!entity.attachment || candidate.attachment?.zoneId === entity.attachment.zoneId));
     const zIndex = siblings.length ? Math.max(...siblings.map((candidate) => candidate.zIndex)) + 1 : 0;

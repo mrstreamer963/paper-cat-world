@@ -77,4 +77,29 @@ describe("renderer drag preview", () => {
     expect(during.x - before.x).toBeCloseTo(45);
     expect(during.y - before.y).toBeCloseTo(-30);
   });
+
+  it("paints an extracted nested sheet in front of a cat", () => {
+    const rect = (x, y, width, height) => [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
+    const zones = Object.fromEntries(["head", "face", "body", "paws", "back"].map((zoneId, index) => [zoneId, { zoneId, layer: index - 2, tiePriority: index, polygons: [rect(0, 0, 220, 300)] }]));
+    let world = createFixtureWorld({ "paper-cat-v1": { templateId: "paper-cat-v1", viewBox: { x: 0, y: 0, width: 220, height: 300 }, silhouette: rect(0, 0, 220, 300), zones } });
+    world = applyCommand(world, { type: "setSheetState", sheetId: "sheet-car", state: "open" }).world;
+    world = applyCommand(world, { type: "moveEntityInWorld", entityId: "sheet-nested", targetSurfaceId: "table", transform: { x: 285, y: 500, rotation: 0, scale: 1 }, zPolicy: "front" }).world;
+    world = applyCommand(world, { type: "bringEntityToFront", entityId: "sheet-nested" }).world;
+    const order = Object.create(PixiWorldRenderer.prototype).paintOrder(world).map((entity) => entity.id);
+    expect(order.indexOf("sheet-nested")).toBeGreaterThan(order.indexOf("cat-blue"));
+  });
+
+  it("holds an extracted sheet in front of the orange cat and moves it with the cat", () => {
+    const rect = (x, y, width, height) => [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
+    const zones = Object.fromEntries(["head", "face", "body", "paws", "back"].map((zoneId, index) => [zoneId, { zoneId, layer: zoneId === "back" ? -1 : zoneId === "paws" ? 3 : index, tiePriority: index, polygons: [rect(0, 0, 220, 300)] }]));
+    let world = createFixtureWorld({ "paper-cat-v1": { templateId: "paper-cat-v1", viewBox: { x: 0, y: 0, width: 220, height: 300 }, silhouette: rect(0, 0, 220, 300), zones } });
+    world = applyCommand(world, { type: "setSheetState", sheetId: "sheet-car", state: "open" }).world;
+    world = applyCommand(world, { type: "moveEntityInWorld", entityId: "sheet-nested", targetSurfaceId: "table", transform: { x: 1040, y: 180, rotation: 0, scale: .8 }, zPolicy: "front" }).world;
+    const held = applyCommand(world, { type: "holdEntity", entityId: "sheet-nested", catId: "cat-orange" }); expect(held.ok).toBe(true); world = held.world;
+    expect(world.entities["sheet-nested"].surfaceId).toBe("cat-orange-wear"); expect(world.entities["sheet-nested"].attachment).toEqual(expect.objectContaining({ kind: "held", catId: "cat-orange", zoneId: "paws", worldScaleBeforeHold: .8 }));
+    const renderer = Object.create(PixiWorldRenderer.prototype), order = renderer.paintOrder(world).map((entity) => entity.id); expect(order.indexOf("sheet-nested")).toBeGreaterThan(order.indexOf("cat-orange"));
+    const before = getEntityWorldTransform(world, "sheet-nested"), cat = getEntityWorldTransform(world, "cat-orange"); world = applyCommand(world, { type: "moveEntityInWorld", entityId: "cat-orange", targetSurfaceId: "table", transform: { ...cat, x: cat.x - 120, y: cat.y + 80 }, zPolicy: "front" }).world;
+    const after = getEntityWorldTransform(world, "sheet-nested"); expect(after.x - before.x).toBeCloseTo(-120); expect(after.y - before.y).toBeCloseTo(80);
+    const released = applyCommand(world, { type: "releaseHeldEntity", entityId: "sheet-nested", targetSurfaceId: "table", worldTransform: after }); expect(released.ok).toBe(true); expect(released.world.entities["sheet-nested"].attachment).toBeNull(); expect(getEntityWorldTransform(released.world, "sheet-nested").scale).toBeCloseTo(.8);
+  });
 });

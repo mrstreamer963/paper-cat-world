@@ -78,6 +78,18 @@ export function validateWorldState(world) {
       const attachmentSurface = surfaces[entity.attachmentSurfaceId];
       if (!attachmentSurface || attachmentSurface.kind !== "cat-attachments" || attachmentSurface.hostEntityId !== entity.id) add(errors, "INVALID_ATTACHMENT", `${path}.attachmentSurfaceId`);
     }
+    if (entity.kind === "sheet") {
+      if (!["open", "closed"].includes(entity.state)) add(errors, "INVALID_SHEET", `${path}.state`);
+      const roles = [["insideSurfaceId", "sheet-inside"], ["outerTopSurfaceId", "sheet-outer-top"], ["outerBottomSurfaceId", "sheet-outer-bottom"]];
+      if (new Set(roles.map(([field]) => entity[field])).size !== roles.length) add(errors, "INVALID_SHEET", path, { reason: "surface IDs must be unique" });
+      for (const [field, kind] of roles) { const surface = surfaces[entity[field]]; if (!surface || surface.kind !== kind || surface.hostEntityId !== entity.id) add(errors, "SURFACE_ROLE_MISMATCH", `${path}.${field}`); }
+    }
+    if (entity.kind === "notebook") {
+      if (!["open", "closed"].includes(entity.state) || !Array.isArray(entity.spreads) || entity.spreads.length === 0 || !Number.isInteger(entity.activeSpreadIndex) || entity.activeSpreadIndex < 0 || entity.activeSpreadIndex >= (entity.spreads?.length ?? 0)) add(errors, "INVALID_NOTEBOOK", path);
+      const cover = surfaces[entity.coverSurfaceId]; if (!cover || cover.kind !== "notebook-cover" || cover.hostEntityId !== entity.id) add(errors, "SURFACE_ROLE_MISMATCH", `${path}.coverSurfaceId`);
+      const ids = new Set([entity.coverSurfaceId]);
+      for (const [i, spread] of (entity.spreads ?? []).entries()) { if (!spread || !validId(spread.id) || !validId(spread.surfaceId) || !validId(spread.drawingId) || ids.has(spread.surfaceId)) add(errors, "INVALID_NOTEBOOK", `${path}.spreads.${i}`); ids.add(spread?.surfaceId); const surface = surfaces[spread?.surfaceId]; if (!surface || surface.kind !== "notebook-spread" || surface.hostEntityId !== entity.id || surface.drawingId !== spread.drawingId) add(errors, "SURFACE_ROLE_MISMATCH", `${path}.spreads.${i}.surfaceId`); }
+    }
     if (entity.wearable) {
       const template = templates[entity.wearable.templateId], zone = template?.zones?.[entity.wearable.zoneId];
       if (!template) add(errors, "TEMPLATE_NOT_FOUND", `${path}.wearable.templateId`);
@@ -87,6 +99,10 @@ export function validateWorldState(world) {
         const cat = entities[entity.attachment.catId];
         if (!cat || cat.kind !== "cat" || cat.templateId !== entity.wearable.templateId || entity.attachment.zoneId !== entity.wearable.zoneId || entity.surfaceId !== cat?.attachmentSurfaceId) add(errors, "INVALID_ATTACHMENT", `${path}.attachment`);
       } else if (surfaces[entity.surfaceId]?.kind === "cat-attachments") add(errors, "INVALID_ATTACHMENT", `${path}.surfaceId`);
+    }
+    if (entity.attachment?.kind === "held") {
+      const cat = entities[entity.attachment.catId];
+      if (!cat || cat.kind !== "cat" || entity.attachment.zoneId !== "paws" || entity.surfaceId !== cat.attachmentSurfaceId || !Number.isFinite(entity.attachment.worldScaleBeforeHold) || entity.attachment.worldScaleBeforeHold <= 0) add(errors, "INVALID_ATTACHMENT", `${path}.attachment`);
     }
   }
 
@@ -101,11 +117,14 @@ export function validateWorldState(world) {
     else if (!entities[surface.hostEntityId]) add(errors, "INVALID_REFERENCE", `${path}.hostEntityId`, { hostEntityId: surface.hostEntityId });
     if (surface.kind === "table") {
       if (surface.hostEntityId !== null || surface.id !== world.table?.surfaceId) add(errors, "INVALID_REFERENCE", path, { reason: "invalid table surface" });
-    } else if (surface.kind !== "generic" && surface.kind !== "cat-attachments") add(errors, "INVALID_REFERENCE", `${path}.kind`, { kind: surface.kind });
+    } else if (!["generic", "cat-attachments", "sheet-inside", "sheet-outer-top", "sheet-outer-bottom", "notebook-cover", "notebook-spread"].includes(surface.kind)) add(errors, "INVALID_REFERENCE", `${path}.kind`, { kind: surface.kind });
+    if (surface.drawingId !== undefined && !drawings[surface.drawingId]) add(errors, "DRAWING_NOT_FOUND", `${path}.drawingId`);
+    if (surface.kind.startsWith?.("sheet-")) { const host = entities[surface.hostEntityId]; if (!host || host.kind !== "sheet") add(errors, "SURFACE_ROLE_MISMATCH", path); }
+    if (surface.kind.startsWith?.("notebook-")) { const host = entities[surface.hostEntityId]; if (!host || host.kind !== "notebook") add(errors, "SURFACE_ROLE_MISMATCH", path); }
     if (surface.kind === "cat-attachments") {
       const host = entities[surface.hostEntityId];
       if (!host || host.kind !== "cat" || host.attachmentSurfaceId !== surface.id) add(errors, "INVALID_ATTACHMENT", path);
-      for (const child of Object.values(entities).filter((entity) => entity.surfaceId === surface.id)) if (!child.wearable || child.attachment?.catId !== host?.id) add(errors, "INVALID_ATTACHMENT", `entities.${child.id}.surfaceId`);
+      for (const child of Object.values(entities).filter((entity) => entity.surfaceId === surface.id)) if (child.attachment?.catId !== host?.id || (!child.wearable && child.attachment?.kind !== "held")) add(errors, "INVALID_ATTACHMENT", `entities.${child.id}.surfaceId`);
     }
     validateTransform(surface.transform, rules, `${path}.transform`, errors);
     if (!isSimplePolygon(surface.placementArea, epsilon)) add(errors, "INVALID_POLYGON", `${path}.placementArea`);
