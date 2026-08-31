@@ -95,6 +95,39 @@ export function isSimplePolygon(points, epsilon = 1e-9) {
   return true;
 }
 
+export function isConvexPolygon(points, epsilon = 1e-9) {
+  if (!isSimplePolygon(points, epsilon)) return false;
+  let direction = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const a = points[index], b = points[(index + 1) % points.length], c = points[(index + 2) % points.length];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(cross) <= epsilon) continue;
+    if (direction && Math.sign(cross) !== direction) return false;
+    direction = Math.sign(cross);
+  }
+  return direction !== 0;
+}
+
+export function triangulateSimplePolygon(points, epsilon = 1e-9) {
+  if (!isSimplePolygon(points, epsilon)) return [];
+  const orientationSign = Math.sign(signedPolygonArea(points)), indices = points.map((_, index) => index), triangles = [];
+  const cross = (a, b, c) => ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * orientationSign;
+  let guard = points.length * points.length;
+  while (indices.length > 3 && guard-- > 0) {
+    let clipped = false;
+    for (let index = 0; index < indices.length; index += 1) {
+      const previous = indices[(index + indices.length - 1) % indices.length], current = indices[index], next = indices[(index + 1) % indices.length];
+      const triangle = [points[previous], points[current], points[next]];
+      if (cross(...triangle) <= epsilon) continue;
+      if (indices.some((candidate) => candidate !== previous && candidate !== current && candidate !== next && pointInPolygon(points[candidate], triangle, epsilon))) continue;
+      triangles.push(triangle.map((point) => ({ ...point }))); indices.splice(index, 1); clipped = true; break;
+    }
+    if (!clipped) return [];
+  }
+  if (indices.length === 3) triangles.push(indices.map((index) => ({ ...points[index] })));
+  return triangles;
+}
+
 export function pointInPolygon(point, points, epsilon = 1e-9) {
   if (!isFinitePoint(point) || !Array.isArray(points) || points.length < 3) return false;
   let inside = false;
@@ -107,4 +140,35 @@ export function pointInPolygon(point, points, epsilon = 1e-9) {
     if (crosses) inside = !inside;
   }
   return inside;
+}
+
+// Clips an arbitrary simple subject polygon against a convex polygon.
+export function clipPolygonToConvex(subject, clip, epsilon = 1e-9) {
+  if (!isSimplePolygon(subject, epsilon) || !isSimplePolygon(clip, epsilon)) return [];
+  const direction = Math.sign(signedPolygonArea(clip));
+  let output = subject.map((point) => ({ ...point }));
+  const cross = (a, b, p) => ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) * direction;
+  for (let i = 0; i < clip.length && output.length; i += 1) {
+    const a = clip[i], b = clip[(i + 1) % clip.length], input = output;
+    output = [];
+    const intersection = (p, q) => {
+      const ex = b.x - a.x, ey = b.y - a.y, dx = q.x - p.x, dy = q.y - p.y;
+      const denominator = dx * ey - dy * ex;
+      if (Math.abs(denominator) <= epsilon) return { ...q };
+      const t = ((a.x - p.x) * ey - (a.y - p.y) * ex) / denominator;
+      return { x: p.x + t * dx, y: p.y + t * dy };
+    };
+    for (let j = 0; j < input.length; j += 1) {
+      const current = input[j], previous = input[(j + input.length - 1) % input.length];
+      const currentInside = cross(a, b, current) >= -epsilon, previousInside = cross(a, b, previous) >= -epsilon;
+      if (currentInside !== previousInside) output.push(intersection(previous, current));
+      if (currentInside) output.push(current);
+    }
+  }
+  return output;
+}
+
+export function polygonIntersectionArea(subject, convexClip, epsilon = 1e-9) {
+  if (!isConvexPolygon(convexClip, epsilon)) return 0;
+  return triangulateSimplePolygon(subject, epsilon).reduce((area, triangle) => area + Math.abs(signedPolygonArea(clipPolygonToConvex(triangle, convexClip, epsilon))), 0);
 }

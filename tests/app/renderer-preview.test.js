@@ -4,6 +4,18 @@ import { PixiWorldRenderer } from "../../src/render/pixi-world-renderer.js";
 import { applyCommand, getEntityWorldTransform } from "../../src/core/index.js";
 
 describe("renderer drag preview", () => {
+  it("sorts cat attachments by zone layer around the cat body", () => {
+    const rect = (x, y, width, height) => [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
+    const template = { templateId: "paper-cat-v1", viewBox: { x: 0, y: 0, width: 220, height: 300 }, silhouette: rect(0, 0, 220, 300), zones: { head: { zoneId: "head", layer: 1, tiePriority: 0, polygons: [rect(0, 0, 220, 110)] }, face: { zoneId: "face", layer: 2, tiePriority: 1, polygons: [rect(70, 50, 80, 50)] }, body: { zoneId: "body", layer: 0, tiePriority: 2, polygons: [rect(0, 110, 220, 150)] }, paws: { zoneId: "paws", layer: 2, tiePriority: 3, polygons: [rect(0, 260, 220, 40)] }, back: { zoneId: "back", layer: -1, tiePriority: 4, polygons: [rect(0, 110, 220, 190)] } } };
+    let world = createFixtureWorld({ "paper-cat-v1": template });
+    const original = world.entities["purple-hat"], attached = (id, zoneId, zIndex) => ({ ...original, id, zIndex, surfaceId: "cat-blue-wear", wearable: { ...original.wearable, zoneId }, attachment: { catId: "cat-blue", zoneId } });
+    world = { ...world, entities: { ...world.entities, "purple-hat": attached("purple-hat", "head", 1), "body-item": attached("body-item", "body", 9), "back-item": attached("back-item", "back", 20) } };
+    const order = Object.create(PixiWorldRenderer.prototype).paintOrder(world).map((entity) => entity.id);
+    expect(order.indexOf("back-item")).toBeLessThan(order.indexOf("cat-blue"));
+    expect(order.indexOf("cat-blue")).toBeLessThan(order.indexOf("body-item"));
+    expect(order.indexOf("body-item")).toBeLessThan(order.indexOf("purple-hat"));
+  });
+
   it("moves every nested entity together with its dragged host", () => {
     const world = createFixtureWorld();
     const renderer = Object.create(PixiWorldRenderer.prototype);

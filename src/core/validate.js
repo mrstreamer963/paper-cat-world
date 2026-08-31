@@ -1,7 +1,8 @@
-import { isFinitePoint, isSimplePolygon, pointInPolygon } from "./geometry/polygon.js";
+import { isConvexPolygon, isFinitePoint, isSimplePolygon, pointInPolygon } from "./geometry/polygon.js";
 
 const add = (errors, code, path, details = {}) => errors.push({ code, path, details });
 const validId = (value) => typeof value === "string" && value.length > 0;
+const CAT_ZONE_IDS = new Set(["head", "face", "body", "paws", "back"]);
 
 function validateTransform(transform, rules, path, errors) {
   if (!transform || typeof transform !== "object") {
@@ -30,9 +31,18 @@ export function validateWorldState(world) {
   const entities = world.entities && typeof world.entities === "object" ? world.entities : {};
   const surfaces = world.surfaces && typeof world.surfaces === "object" ? world.surfaces : {};
   const drawings = world.drawings && typeof world.drawings === "object" ? world.drawings : {};
+  const templates = rules.templates && typeof rules.templates === "object" ? rules.templates : {};
   if (entities !== world.entities) add(errors, "INVALID_REFERENCE", "entities");
   if (surfaces !== world.surfaces) add(errors, "INVALID_REFERENCE", "surfaces");
   if (drawings !== world.drawings) add(errors, "INVALID_REFERENCE", "drawings");
+  if (templates !== rules.templates) add(errors, "INVALID_TEMPLATE", "rules.templates");
+
+  for (const [templateId, template] of Object.entries(templates)) {
+    const path = `rules.templates.${templateId}`;
+    if (!template || template.templateId !== templateId || !template.viewBox || !Number.isFinite(template.viewBox.x) || !Number.isFinite(template.viewBox.y) || !Number.isFinite(template.viewBox.width) || template.viewBox.width <= 0 || !Number.isFinite(template.viewBox.height) || template.viewBox.height <= 0 || !isSimplePolygon(template.silhouette, epsilon) || !template.zones || typeof template.zones !== "object" || Object.keys(template.zones).length === 0) { add(errors, "INVALID_TEMPLATE", path); continue; }
+    if ([...CAT_ZONE_IDS].some((zoneId) => !template.zones[zoneId]) || Object.keys(template.zones).some((zoneId) => !CAT_ZONE_IDS.has(zoneId))) add(errors, "INVALID_TEMPLATE", `${path}.zones`);
+    for (const [zoneId, zone] of Object.entries(template.zones)) if (!zone || zone.zoneId !== zoneId || !Number.isFinite(zone.layer) || !Number.isFinite(zone.tiePriority) || !Array.isArray(zone.polygons) || zone.polygons.length === 0 || zone.polygons.some((polygon) => !isConvexPolygon(polygon, epsilon))) add(errors, "INVALID_TEMPLATE", `${path}.zones.${zoneId}`);
+  }
 
   for (const [key, drawing] of Object.entries(drawings)) {
     const path = `drawings.${key}`;
@@ -61,6 +71,23 @@ export function validateWorldState(world) {
       if (!drawings[entity.drawingId]) add(errors, "DRAWING_NOT_FOUND", `${path}.drawingId`);
       if (!isFinitePoint(entity.anchor) || !isSimplePolygon(entity.contour, epsilon)) add(errors, "INVALID_CONTOUR", `${path}.contour`);
     }
+    if (entity.kind === "cat") {
+      if (!templates[entity.templateId]) add(errors, "TEMPLATE_NOT_FOUND", `${path}.templateId`);
+      if (!drawings[entity.drawingId]) add(errors, "DRAWING_NOT_FOUND", `${path}.drawingId`);
+      else if (templates[entity.templateId] && (Math.abs(drawings[entity.drawingId].width - templates[entity.templateId].viewBox.width) > epsilon || Math.abs(drawings[entity.drawingId].height - templates[entity.templateId].viewBox.height) > epsilon)) add(errors, "INVALID_TEMPLATE", `${path}.drawingId`);
+      const attachmentSurface = surfaces[entity.attachmentSurfaceId];
+      if (!attachmentSurface || attachmentSurface.kind !== "cat-attachments" || attachmentSurface.hostEntityId !== entity.id) add(errors, "INVALID_ATTACHMENT", `${path}.attachmentSurfaceId`);
+    }
+    if (entity.wearable) {
+      const template = templates[entity.wearable.templateId], zone = template?.zones?.[entity.wearable.zoneId];
+      if (!template) add(errors, "TEMPLATE_NOT_FOUND", `${path}.wearable.templateId`);
+      else if (!zone) add(errors, "WEARABLE_ZONE_NOT_FOUND", `${path}.wearable.zoneId`);
+      validateTransform(entity.wearable.templateTransform, rules, `${path}.wearable.templateTransform`, errors);
+      if (entity.attachment) {
+        const cat = entities[entity.attachment.catId];
+        if (!cat || cat.kind !== "cat" || cat.templateId !== entity.wearable.templateId || entity.attachment.zoneId !== entity.wearable.zoneId || entity.surfaceId !== cat?.attachmentSurfaceId) add(errors, "INVALID_ATTACHMENT", `${path}.attachment`);
+      } else if (surfaces[entity.surfaceId]?.kind === "cat-attachments") add(errors, "INVALID_ATTACHMENT", `${path}.surfaceId`);
+    }
   }
 
   let rootCount = 0;
@@ -74,7 +101,12 @@ export function validateWorldState(world) {
     else if (!entities[surface.hostEntityId]) add(errors, "INVALID_REFERENCE", `${path}.hostEntityId`, { hostEntityId: surface.hostEntityId });
     if (surface.kind === "table") {
       if (surface.hostEntityId !== null || surface.id !== world.table?.surfaceId) add(errors, "INVALID_REFERENCE", path, { reason: "invalid table surface" });
-    } else if (surface.kind !== "generic") add(errors, "INVALID_REFERENCE", `${path}.kind`, { kind: surface.kind });
+    } else if (surface.kind !== "generic" && surface.kind !== "cat-attachments") add(errors, "INVALID_REFERENCE", `${path}.kind`, { kind: surface.kind });
+    if (surface.kind === "cat-attachments") {
+      const host = entities[surface.hostEntityId];
+      if (!host || host.kind !== "cat" || host.attachmentSurfaceId !== surface.id) add(errors, "INVALID_ATTACHMENT", path);
+      for (const child of Object.values(entities).filter((entity) => entity.surfaceId === surface.id)) if (!child.wearable || child.attachment?.catId !== host?.id) add(errors, "INVALID_ATTACHMENT", `entities.${child.id}.surfaceId`);
+    }
     validateTransform(surface.transform, rules, `${path}.transform`, errors);
     if (!isSimplePolygon(surface.placementArea, epsilon)) add(errors, "INVALID_POLYGON", `${path}.placementArea`);
     if (surface.localVisibility !== "visible" && surface.localVisibility !== "hidden") add(errors, "INVALID_REFERENCE", `${path}.localVisibility`, { value: surface.localVisibility });

@@ -1,10 +1,10 @@
 import { fail, CoreError } from "../errors.js";
 import { matrixFromTransform, invertMatrix, multiplyMatrices, decomposeMatrix } from "../geometry/matrix.js";
-import { aabbIntersects, isFinitePoint, isSimplePolygon, normalizeClosedContour, pointInPolygon, pointsAabb, polygonCentroid, signedPolygonArea } from "../geometry/polygon.js";
-import { getSurfaceWorldMatrixQuery, isSurfaceVisible } from "../queries.js";
+import { aabbIntersects, isFinitePoint, isSimplePolygon, normalizeClosedContour, pointInPolygon, pointsAabb, polygonCentroid, polygonIntersectionArea, signedPolygonArea } from "../geometry/polygon.js";
+import { getEntityWorldTransformQuery, getSurfaceWorldMatrixQuery, isEntityVisibleQuery, isSurfaceVisible } from "../queries.js";
 import { validateWorldState } from "../validate.js";
 
-const COMMANDS = new Set(["createEntity", "deleteEntity", "moveEntity", "moveEntityInWorld", "setEntityTransform", "bringEntityToFront", "setSurfaceVisibility", "createDrawing", "deleteDrawing", "addStroke", "removeStroke", "createCutout"]);
+const COMMANDS = new Set(["createEntity", "deleteEntity", "moveEntity", "moveEntityInWorld", "setEntityTransform", "bringEntityToFront", "setSurfaceVisibility", "createDrawing", "deleteDrawing", "addStroke", "removeStroke", "createCutout", "createCat", "createWearableCutout", "attachWearable", "detachWearable"]);
 const cloneTransform = (value) => ({ x: value.x, y: value.y, rotation: value.rotation, scale: value.scale });
 
 function assertId(value, name) {
@@ -86,7 +86,7 @@ function createEntity(world, command) {
     if (ids.has(surface.id) || world.entities[surface.id] || world.surfaces[surface.id]) throw fail("DUPLICATE_ID", `ID ${surface.id} already exists`, { id: surface.id });
     ids.add(surface.id);
     if (surface.hostEntityId !== entity.id) throw fail("INVALID_REFERENCE", "Owned surface must reference the new entity", { surfaceId: surface.id, hostEntityId: surface.hostEntityId });
-    if (surface.kind !== "generic") throw fail("INVALID_REFERENCE", "Owned surfaces must be generic", { kind: surface.kind });
+    if (surface.kind !== "generic" && surface.kind !== "cat-attachments") throw fail("INVALID_REFERENCE", "Invalid owned surface kind", { kind: surface.kind });
     assertTransform(world, surface.transform);
     if (!isSimplePolygon(surface.placementArea, world.rules.geometryEpsilon)) throw fail("INVALID_POLYGON", "placementArea must be a simple non-degenerate polygon", { surfaceId: surface.id });
     if (surface.localVisibility !== "visible" && surface.localVisibility !== "hidden") throw fail("INVALID_REFERENCE", "Invalid surface visibility", { value: surface.localVisibility });
@@ -99,6 +99,81 @@ function createEntity(world, command) {
     surfaces: { ...world.surfaces, ...newSurfaces },
   };
   return { world: next, events: [{ type: "entityCreated", entityId: entity.id }] };
+}
+
+function requireTemplate(world, templateId) {
+  const template = world.rules.templates?.[templateId];
+  if (!template) throw fail("TEMPLATE_NOT_FOUND", `Template ${templateId} was not found`, { templateId });
+  return template;
+}
+
+function createCat(world, command) {
+  assertId(command.catId, "catId"); assertId(command.drawingId, "drawingId"); assertId(command.attachmentSurfaceId, "attachmentSurfaceId");
+  const template = requireTemplate(world, command.templateId);
+  const drawing = world.drawings[command.drawingId];
+  if (!drawing) throw fail("DRAWING_NOT_FOUND", "Cat drawing was not found", { drawingId: command.drawingId });
+  if (Math.abs(drawing.width - template.viewBox.width) > world.rules.geometryEpsilon || Math.abs(drawing.height - template.viewBox.height) > world.rules.geometryEpsilon) throw fail("INVALID_TEMPLATE", "Cat drawing must use template dimensions", { drawingId: drawing.id, templateId: template.templateId });
+  const transform = command.transform ?? command.worldTransform;
+  const entity = { id: command.catId, kind: "cat", label: command.label ?? "Кот", templateId: command.templateId, drawingId: command.drawingId, attachmentSurfaceId: command.attachmentSurfaceId, width: template.viewBox.width, height: template.viewBox.height, surfaceId: command.targetSurfaceId ?? world.table.surfaceId, transform, zIndex: command.zIndex ?? nextZIndex(world, command.targetSurfaceId ?? world.table.surfaceId) };
+  const v = template.viewBox;
+  const attachmentSurface = { id: command.attachmentSurfaceId, kind: "cat-attachments", hostEntityId: command.catId, transform: { x: 0, y: 0, rotation: 0, scale: 1 }, placementArea: [{ x: v.x, y: v.y }, { x: v.x + v.width, y: v.y }, { x: v.x + v.width, y: v.y + v.height }, { x: v.x, y: v.y + v.height }], localVisibility: "visible" };
+  const made = createEntity(world, { entity, surfaces: [attachmentSurface] });
+  return { world: made.world, events: [...made.events, { type: "catCreated", catId: command.catId }] };
+}
+
+function chooseWearableZone(world, template, contour) {
+  const epsilon = world.rules.geometryEpsilon;
+  const ranked = Object.values(template.zones).map((zone) => ({ zone, area: zone.polygons.reduce((sum, polygon) => sum + polygonIntersectionArea(contour, polygon, epsilon), 0) }))
+    .filter(({ area }) => area > epsilon)
+    .sort((a, b) => Math.abs(b.area - a.area) > epsilon ? b.area - a.area : a.zone.tiePriority - b.zone.tiePriority || a.zone.zoneId.localeCompare(b.zone.zoneId));
+  if (!ranked.length) throw fail("WEARABLE_ZONE_NOT_FOUND", "Wearable does not intersect a template zone");
+  return ranked[0].zone;
+}
+
+function createWearableCutout(world, command) {
+  const template = requireTemplate(world, command.templateId);
+  const close = normalizeClosedContour(command.contour, command.closeDistance ?? world.rules.contourCloseDistance, world.rules.geometryEpsilon);
+  if (!close.ok) throw fail(close.code, "Contour is invalid");
+  const templateClose = command.templateContour ? normalizeClosedContour(command.templateContour, command.closeDistance ?? world.rules.contourCloseDistance, world.rules.geometryEpsilon) : close;
+  if (!templateClose.ok) throw fail(templateClose.code, "Template contour is invalid");
+  const zone = chooseWearableZone(world, template, templateClose.contour);
+  const anchor = polygonCentroid(templateClose.contour, world.rules.geometryEpsilon);
+  const made = createCutout(world, { ...command, type: "createCutout" });
+  const entity = made.world.entities[command.entityId];
+  const templateTransform = command.templateTransform ?? { x: anchor.x, y: anchor.y, rotation: 0, scale: 1 };
+  assertTransform(world, templateTransform);
+  const wearable = { ...entity, wearable: { templateId: command.templateId, zoneId: zone.zoneId, templateTransform: cloneTransform(templateTransform) }, attachment: null };
+  return { world: { ...made.world, entities: { ...made.world.entities, [entity.id]: wearable } }, events: [...made.events, { type: "wearableCreated", wearableId: entity.id, zoneId: zone.zoneId }] };
+}
+
+function attachWearable(world, command) {
+  const wearable = requireEntity(world, command.wearableId), cat = requireEntity(world, command.catId);
+  if (!wearable.wearable) throw fail("NOT_WEARABLE", "Entity is not wearable", { entityId: wearable.id });
+  if (cat.kind !== "cat") throw fail("NOT_A_CAT", "Entity is not a cat", { entityId: cat.id });
+  if (wearable.attachment) throw fail(wearable.attachment.catId === cat.id ? "ALREADY_ATTACHED" : "ENTITY_ATTACHED", "Wearable is already attached");
+  if (wearable.wearable.templateId !== cat.templateId) throw fail("INCOMPATIBLE_TEMPLATE", "Wearable and cat templates differ");
+  if (!isEntityVisibleQuery(world, wearable.id) || !isEntityVisibleQuery(world, cat.id)) throw fail("TARGET_NOT_VISIBLE", "Wearable and cat must be visible");
+  const template = requireTemplate(world, cat.templateId), zone = template.zones[wearable.wearable.zoneId];
+  if (!zone) throw fail("WEARABLE_ZONE_NOT_FOUND", "Wearable zone was not found");
+  const zIndex = nextZIndex(world, cat.attachmentSurfaceId);
+  const fromWorldTransform = getEntityWorldTransformQuery(world, wearable.id);
+  const updated = { ...wearable, surfaceId: cat.attachmentSurfaceId, transform: cloneTransform(wearable.wearable.templateTransform), zIndex, attachment: { catId: cat.id, zoneId: zone.zoneId } };
+  return { world: { ...world, entities: { ...world.entities, [wearable.id]: updated } }, events: [{ type: "wearableAttached", wearableId: wearable.id, catId: cat.id, zoneId: zone.zoneId, fromWorldTransform }] };
+}
+
+function detachWearable(world, command) {
+  const wearable = requireEntity(world, command.wearableId);
+  if (!wearable.wearable) throw fail("NOT_WEARABLE", "Entity is not wearable");
+  if (!wearable.attachment) throw fail("INVALID_ATTACHMENT", "Wearable is not attached");
+  const pose = command.worldTransform ?? command.transform ?? getEntityWorldTransformQuery(world, wearable.id);
+  const targetSurfaceId = command.targetSurfaceId;
+  assertTransform(world, pose);
+  const inverse = invertMatrix(getSurfaceWorldMatrixQuery(world, targetSurfaceId), world.rules.geometryEpsilon);
+  const local = inverse && decomposeMatrix(multiplyMatrices(inverse, matrixFromTransform(pose)), world.rules.geometryEpsilon);
+  if (!local) throw fail("INVALID_TRANSFORM", "World transform cannot be represented locally");
+  const moved = movedWorld(world, wearable, targetSurfaceId, local, command.zPolicy ?? "front");
+  const updated = { ...moved.entities[wearable.id], attachment: null };
+  return { world: { ...moved, entities: { ...moved.entities, [wearable.id]: updated } }, events: [{ type: "wearableDetached", wearableId: wearable.id, catId: wearable.attachment.catId }] };
 }
 
 function cloneStroke(stroke) { return { ...stroke, points: stroke.points.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure ?? .5 })) }; }
@@ -167,6 +242,10 @@ function execute(world, command) {
   if (command.type === "removeStroke") return changeStroke(world, command, true);
   if (command.type === "deleteEntity") return deleteEntity(world, command);
   if (command.type === "createCutout") return createCutout(world, command);
+  if (command.type === "createCat") return createCat(world, command);
+  if (command.type === "createWearableCutout") return createWearableCutout(world, command);
+  if (command.type === "attachWearable") return attachWearable(world, command);
+  if (command.type === "detachWearable") return detachWearable(world, command);
   if (command.type === "setSurfaceVisibility") {
     const surface = requireSurface(world, command.surfaceId);
     if (surface.kind !== "generic") throw fail("INVALID_REFERENCE", "Only generic surfaces can change visibility", { surfaceId: surface.id });
@@ -174,8 +253,10 @@ function execute(world, command) {
     return { world: { ...world, surfaces: { ...world.surfaces, [surface.id]: { ...surface, localVisibility: command.visibility } } }, events: [{ type: "surfaceVisibilityChanged", surfaceId: surface.id, visibility: command.visibility }] };
   }
   const entity = requireEntity(world, command.entityId);
+  if (entity.attachment && command.type !== "bringEntityToFront") throw fail("ENTITY_ATTACHED", "Detach wearable before moving it", { entityId: entity.id });
   if (command.type === "bringEntityToFront") {
-    const zIndex = nextZIndex(world, entity.surfaceId);
+    const siblings = Object.values(world.entities).filter((candidate) => candidate.surfaceId === entity.surfaceId && (!entity.attachment || candidate.attachment?.zoneId === entity.attachment.zoneId));
+    const zIndex = siblings.length ? Math.max(...siblings.map((candidate) => candidate.zIndex)) + 1 : 0;
     return { world: { ...world, entities: { ...world.entities, [entity.id]: { ...entity, zIndex } } }, events: [{ type: "entityBroughtToFront", entityId: entity.id, zIndex }] };
   }
   let targetSurfaceId = command.type === "setEntityTransform" ? entity.surfaceId : command.targetSurfaceId;

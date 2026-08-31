@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 300" data-template-id="paper-cat-v1">
+  <polygon data-silhouette points="45,58 28,8 78,34 110,22 142,34 192,8 175,60 187,103 168,139 178,260 145,292 110,274 75,292 42,260 52,139 33,103"/>
+  <polygon data-zone="back" data-layer="-1" data-tie-priority="4" points="42,115 178,115 178,275 42,275"/>
+  <polygon data-zone="head" data-layer="1" data-tie-priority="1" points="28,8 192,8 187,112 33,112"/>
+  <polygon data-zone="face" data-layer="2" data-tie-priority="0" points="55,55 165,55 165,125 55,125"/>
+  <polygon data-zone="body" data-layer="1" data-tie-priority="2" points="52,112 168,112 178,260 42,260"/>
+  <polygon data-zone="paws" data-layer="2" data-tie-priority="3" points="42,225 178,225 178,292 42,292"/>
+</svg>
