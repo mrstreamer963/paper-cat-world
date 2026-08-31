@@ -1,10 +1,10 @@
 import { fail, CoreError } from "../errors.js";
 import { matrixFromTransform, invertMatrix, multiplyMatrices, decomposeMatrix } from "../geometry/matrix.js";
-import { isSimplePolygon, pointInPolygon } from "../geometry/polygon.js";
+import { aabbIntersects, isFinitePoint, isSimplePolygon, normalizeClosedContour, pointInPolygon, pointsAabb, polygonCentroid, signedPolygonArea } from "../geometry/polygon.js";
 import { getSurfaceWorldMatrixQuery, isSurfaceVisible } from "../queries.js";
 import { validateWorldState } from "../validate.js";
 
-const COMMANDS = new Set(["createEntity", "moveEntity", "moveEntityInWorld", "setEntityTransform", "bringEntityToFront", "setSurfaceVisibility"]);
+const COMMANDS = new Set(["createEntity", "deleteEntity", "moveEntity", "moveEntityInWorld", "setEntityTransform", "bringEntityToFront", "setSurfaceVisibility", "createDrawing", "deleteDrawing", "addStroke", "removeStroke", "createCutout"]);
 const cloneTransform = (value) => ({ x: value.x, y: value.y, rotation: value.rotation, scale: value.scale });
 
 function assertId(value, name) {
@@ -101,9 +101,72 @@ function createEntity(world, command) {
   return { world: next, events: [{ type: "entityCreated", entityId: entity.id }] };
 }
 
+function cloneStroke(stroke) { return { ...stroke, points: stroke.points.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure ?? .5 })) }; }
+function assertDrawing(drawing) {
+  assertId(drawing?.id, "drawingId");
+  if (!Number.isFinite(drawing.width) || drawing.width <= 0 || !Number.isFinite(drawing.height) || drawing.height <= 0) throw fail("INVALID_NUMBER", "Drawing dimensions must be positive");
+  if (!Array.isArray(drawing.strokes)) throw fail("INVALID_STROKE", "strokes must be an array");
+}
+function assertStroke(stroke) {
+  if (!stroke || typeof stroke !== "object" || typeof stroke.id !== "string" || !stroke.id || !["brush", "eraser"].includes(stroke.tool) || !Number.isFinite(stroke.width) || stroke.width <= 0 || !Array.isArray(stroke.points) || stroke.points.length < 1 || stroke.points.some((p) => !isFinitePoint(p) || !Number.isFinite(p.pressure ?? .5) || (p.pressure ?? .5) < 0 || (p.pressure ?? .5) > 1)) throw fail("INVALID_STROKE", "Stroke is invalid");
+}
+function createDrawing(world, command) {
+  const input = command.drawing ?? command;
+  assertDrawing(input);
+  if (world.drawings[input.id] || world.entities[input.id] || world.surfaces[input.id]) throw fail("DUPLICATE_ID", `ID ${input.id} already exists`);
+  const strokes = input.strokes.map((s) => { assertStroke(s); return cloneStroke(s); });
+  if (new Set(strokes.map((s) => s.id)).size !== strokes.length) throw fail("INVALID_STROKE", "Stroke IDs must be unique");
+  const drawing = { id: input.id, width: input.width, height: input.height, background: input.background ?? "transparent", strokes, revision: input.revision ?? 0 };
+  return { world: { ...world, drawings: { ...world.drawings, [drawing.id]: drawing } }, events: [{ type: "drawingChanged", drawingId: drawing.id, revision: drawing.revision }] };
+}
+function deleteDrawing(world, command) {
+  assertId(command.drawingId, "drawingId"); const drawing = world.drawings[command.drawingId];
+  if (!drawing) throw fail("DRAWING_NOT_FOUND", "Drawing was not found", { drawingId: command.drawingId });
+  if (Object.values(world.entities).some((e) => e.drawingId === drawing.id)) throw fail("DRAWING_IN_USE", "Drawing is referenced", { drawingId: drawing.id });
+  const drawings = { ...world.drawings }; delete drawings[drawing.id];
+  return { world: { ...world, drawings }, events: [{ type: "drawingChanged", drawingId: drawing.id, deleted: true }] };
+}
+function changeStroke(world, command, remove = false) {
+  const drawing = world.drawings[command.drawingId]; if (!drawing) throw fail("DRAWING_NOT_FOUND", "Drawing was not found");
+  let strokes;
+  if (remove) { const i = drawing.strokes.findIndex((s) => s.id === command.strokeId); if (i < 0) throw fail("STROKE_NOT_FOUND", "Stroke was not found"); strokes = drawing.strokes.filter((_, j) => j !== i); }
+  else { assertStroke(command.stroke); if (drawing.strokes.some((s) => s.id === command.stroke.id)) throw fail("DUPLICATE_ID", "Stroke ID already exists"); strokes = [...drawing.strokes, cloneStroke(command.stroke)]; }
+  const next = { ...drawing, strokes, revision: drawing.revision + 1 };
+  return { world: { ...world, drawings: { ...world.drawings, [drawing.id]: next } }, events: [{ type: "drawingChanged", drawingId: drawing.id, revision: next.revision }] };
+}
+function deleteEntity(world, command) {
+  const entity = requireEntity(world, command.entityId); const owned = Object.values(world.surfaces).filter((s) => s.hostEntityId === entity.id);
+  if (owned.some((s) => Object.values(world.entities).some((e) => e.surfaceId === s.id))) throw fail("ENTITY_NOT_EMPTY", "Entity contains placed content", { entityId: entity.id });
+  const entities = { ...world.entities }, surfaces = { ...world.surfaces }, drawings = { ...world.drawings }; delete entities[entity.id]; owned.forEach((s) => delete surfaces[s.id]);
+  if (entity.kind === "cutout" && !Object.values(entities).some((e) => e.drawingId === entity.drawingId)) delete drawings[entity.drawingId];
+  return { world: { ...world, entities, surfaces, drawings }, events: [{ type: "entityDeleted", entityId: entity.id }] };
+}
+function createCutout(world, command) {
+  const sourceId = command.sourceDrawingId ?? command.drawingId; const source = world.drawings[sourceId]; if (!source) throw fail("DRAWING_NOT_FOUND", "Source drawing was not found");
+  const close = normalizeClosedContour(command.contour, command.closeDistance ?? world.rules.contourCloseDistance, world.rules.geometryEpsilon);
+  if (!close.ok) throw fail(close.code, "Contour is invalid");
+  if (Math.abs(signedPolygonArea(close.contour)) < world.rules.minCutoutArea) throw fail("CONTOUR_TOO_SMALL", "Contour area is too small");
+  const anchor = polygonCentroid(close.contour, world.rules.geometryEpsilon); if (!anchor) throw fail("INVALID_CONTOUR", "Contour centroid is invalid");
+  const drawingId = command.newDrawingId ?? command.cutoutDrawingId; const entityId = command.entityId; assertId(drawingId, "newDrawingId"); assertId(entityId, "entityId");
+  if (world.drawings[drawingId] || world.entities[entityId] || world.surfaces[entityId]) throw fail("DUPLICATE_ID", "Cutout ID already exists");
+  const box = pointsAabb(close.contour); const shifted = close.contour.map((p) => ({ x: p.x - anchor.x, y: p.y - anchor.y }));
+  const strokes = source.strokes.filter((s) => aabbIntersects(pointsAabb(s.points, s.width / 2), box)).map((s) => ({ ...cloneStroke(s), points: s.points.map((p) => ({ ...p, x: p.x - anchor.x, y: p.y - anchor.y })) }));
+  const drawing = { id: drawingId, width: box.maxX - box.minX, height: box.maxY - box.minY, background: "transparent", strokes, revision: 0 };
+  const position = command.worldPosition ?? command.position ?? anchor; const surfaceId = command.targetSurfaceId ?? world.table.surfaceId;
+  const entity = { id: entityId, kind: "cutout", label: command.label ?? "Вырезка", drawingId, contour: shifted, anchor: { x: 0, y: 0 }, width: drawing.width, height: drawing.height, surfaceId, transform: { x: position.x, y: position.y, rotation: 0, scale: 1 }, zIndex: nextZIndex(world, surfaceId) };
+  const withDrawing = { ...world, drawings: { ...world.drawings, [drawingId]: drawing } }; const made = createEntity(withDrawing, { type: "createEntity", entity });
+  return { world: made.world, events: [{ type: "drawingChanged", drawingId, revision: 0 }, ...made.events] };
+}
+
 function execute(world, command) {
   if (!command || typeof command !== "object" || !COMMANDS.has(command.type)) throw fail("UNKNOWN_COMMAND", "Unknown command", { type: command?.type });
   if (command.type === "createEntity") return createEntity(world, command);
+  if (command.type === "createDrawing") return createDrawing(world, command);
+  if (command.type === "deleteDrawing") return deleteDrawing(world, command);
+  if (command.type === "addStroke") return changeStroke(world, command);
+  if (command.type === "removeStroke") return changeStroke(world, command, true);
+  if (command.type === "deleteEntity") return deleteEntity(world, command);
+  if (command.type === "createCutout") return createCutout(world, command);
   if (command.type === "setSurfaceVisibility") {
     const surface = requireSurface(world, command.surfaceId);
     if (surface.kind !== "generic") throw fail("INVALID_REFERENCE", "Only generic surfaces can change visibility", { surfaceId: surface.id });

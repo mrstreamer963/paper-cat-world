@@ -50,4 +50,19 @@ describe("renderer drag preview", () => {
     expect(during.x - before.x).toBeCloseTo(-55);
     expect(during.y - before.y).toBeCloseTo(30);
   });
+
+  it("keeps a cutout attached to the ticket when the ticket moves", () => {
+    let world = createFixtureWorld();
+    const created = applyCommand(world, { type: "createEntity", entity: { id: "piece", kind: "paper", width: 20, height: 20, surfaceId: "ticket-surface", transform: { x: 25, y: 20, rotation: 0, scale: 1 }, zIndex: 1 } });
+    expect(created.ok).toBe(true);
+    world = created.world;
+
+    const renderer = Object.create(PixiWorldRenderer.prototype);
+    expect(renderer.isInEntityBranch(world, "piece", "ticket")).toBe(true);
+    const before = renderer.previewPose(world, world.entities.piece, null);
+    const ticket = getEntityWorldTransform(world, "ticket");
+    const during = renderer.previewPose(world, world.entities.piece, { entityId: "ticket", transform: { ...ticket, x: ticket.x + 45, y: ticket.y - 30 } });
+    expect(during.x - before.x).toBeCloseTo(45);
+    expect(during.y - before.y).toBeCloseTo(-30);
+  });
 });

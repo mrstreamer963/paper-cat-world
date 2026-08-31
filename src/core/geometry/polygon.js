@@ -27,7 +27,7 @@ function pointOnSegment(point, start, end, epsilon) {
     && point.y <= Math.max(start.y, end.y) + epsilon;
 }
 
-function segmentsIntersect(a, b, c, d, epsilon) {
+export function segmentsIntersect(a, b, c, d, epsilon = 1e-9) {
   const abC = orientation(a, b, c, epsilon);
   const abD = orientation(a, b, d, epsilon);
   const cdA = orientation(c, d, a, epsilon);
@@ -37,6 +37,44 @@ function segmentsIntersect(a, b, c, d, epsilon) {
     || (abD === 0 && pointOnSegment(d, a, b, epsilon))
     || (cdA === 0 && pointOnSegment(a, c, d, epsilon))
     || (cdB === 0 && pointOnSegment(b, c, d, epsilon));
+}
+
+export const pointDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+export function pointsAabb(points, padding = 0) {
+  if (!Array.isArray(points) || points.length === 0 || points.some((p) => !isFinitePoint(p))) return null;
+  return {
+    minX: Math.min(...points.map((p) => p.x)) - padding,
+    minY: Math.min(...points.map((p) => p.y)) - padding,
+    maxX: Math.max(...points.map((p) => p.x)) + padding,
+    maxY: Math.max(...points.map((p) => p.y)) + padding,
+  };
+}
+
+export function aabbIntersects(a, b) {
+  return Boolean(a && b && a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY);
+}
+
+export function polygonCentroid(points, epsilon = 1e-9) {
+  const area = signedPolygonArea(points);
+  if (!Number.isFinite(area) || Math.abs(area) <= epsilon) return null;
+  let x = 0, y = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const a = points[i], b = points[(i + 1) % points.length], cross = a.x * b.y - b.x * a.y;
+    x += (a.x + b.x) * cross; y += (a.y + b.y) * cross;
+  }
+  return { x: x / (6 * area), y: y / (6 * area) };
+}
+
+export function normalizeClosedContour(points, closeDistance, epsilon = 1e-9) {
+  if (!Array.isArray(points) || points.some((p) => !isFinitePoint(p))) return { ok: false, code: "INVALID_CONTOUR" };
+  const clean = points.map(({ x, y }) => ({ x, y })).filter((p, i, list) => i === 0 || pointDistance(p, list[i - 1]) > epsilon);
+  if (clean.length < 2 || pointDistance(clean[0], clean[clean.length - 1]) > closeDistance) return { ok: false, code: "CONTOUR_NOT_CLOSED" };
+  clean[clean.length - 1] = { ...clean[0] };
+  clean.pop();
+  if (new Set(clean.map((p) => `${p.x},${p.y}`)).size < 3) return { ok: false, code: "INVALID_CONTOUR" };
+  if (!isSimplePolygon(clean, epsilon)) return { ok: false, code: "CONTOUR_SELF_INTERSECTS" };
+  return { ok: true, contour: clean };
 }
 
 export function isSimplePolygon(points, epsilon = 1e-9) {

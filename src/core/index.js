@@ -12,3 +12,4 @@ export const isEntityVisible = isEntityVisibleQuery;
 
 export * from "./geometry/matrix.js";
 export * from "./geometry/polygon.js";
+export * from "./history.js";

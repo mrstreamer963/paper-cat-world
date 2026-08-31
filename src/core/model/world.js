@@ -1,12 +1,17 @@
 import { fail } from "../errors.js";
 
-const DEFAULT_RULES = Object.freeze({ geometryEpsilon: 1e-9, minScale: 0.01, maxScale: 100 });
+const DEFAULT_RULES = Object.freeze({ geometryEpsilon: 1e-9, minScale: 0.01, maxScale: 100, contourCloseDistance: 18, minCutoutArea: 64, historyLimit: 100 });
 
 function positiveFinite(value, fallback, name) {
   const normalized = value ?? fallback;
   if (!Number.isFinite(normalized) || normalized <= 0) {
     throw fail("INVALID_NUMBER", `${name} must be a positive finite number`, { name, value: normalized });
   }
+  return normalized;
+}
+function positiveInteger(value, fallback, name) {
+  const normalized = value ?? fallback;
+  if (!Number.isInteger(normalized) || normalized <= 0) throw fail("INVALID_NUMBER", `${name} must be a positive integer`, { name, value: normalized });
   return normalized;
 }
 
@@ -16,6 +21,9 @@ export function createWorldModel(config = {}) {
     geometryEpsilon: positiveFinite(rulesConfig.geometryEpsilon, DEFAULT_RULES.geometryEpsilon, "geometryEpsilon"),
     minScale: positiveFinite(rulesConfig.minScale, DEFAULT_RULES.minScale, "minScale"),
     maxScale: positiveFinite(rulesConfig.maxScale, DEFAULT_RULES.maxScale, "maxScale"),
+    contourCloseDistance: positiveFinite(rulesConfig.contourCloseDistance, DEFAULT_RULES.contourCloseDistance, "contourCloseDistance"),
+    minCutoutArea: positiveFinite(rulesConfig.minCutoutArea, DEFAULT_RULES.minCutoutArea, "minCutoutArea"),
+    historyLimit: positiveInteger(rulesConfig.historyLimit, DEFAULT_RULES.historyLimit, "historyLimit"),
   };
   if (rules.minScale > rules.maxScale) {
     throw fail("INVALID_TRANSFORM", "minScale cannot exceed maxScale", { minScale: rules.minScale, maxScale: rules.maxScale });
@@ -31,6 +39,7 @@ export function createWorldModel(config = {}) {
     rules,
     table: { width, height, surfaceId },
     entities: {},
+    drawings: {},
     surfaces: {
       [surfaceId]: {
         id: surfaceId,
