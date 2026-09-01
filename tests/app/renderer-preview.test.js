@@ -4,6 +4,24 @@ import { PixiWorldRenderer } from "../../src/render/pixi-world-renderer.js";
 import { applyCommand, getEntityWorldTransform } from "../../src/core/index.js";
 
 describe("renderer drag preview", () => {
+  it("includes a cup configured as a holdable item in the demo", () => {
+    const world = createFixtureWorld();
+    expect(world.entities.cup).toEqual(expect.objectContaining({ kind: "cutout", item: true, label: "Чашка" }));
+  });
+
+  it("always paints the dragged branch above a different selected branch", () => {
+    const world = createFixtureWorld();
+    const renderer = Object.create(PixiWorldRenderer.prototype);
+    const order = renderer.displayOrder(world, {
+      selectedEntityId: "box",
+      dragPreview: { entityId: "folder", transform: getEntityWorldTransform(world, "folder") },
+    }).map((entity) => entity.id);
+
+    expect(order.at(-1)).toBe("ticket");
+    expect(order.indexOf("folder")).toBeGreaterThan(order.indexOf("box"));
+    expect(order.indexOf("ticket")).toBeGreaterThan(order.indexOf("box"));
+  });
+
   it("sorts cat attachments by zone layer around the cat body", () => {
     const rect = (x, y, width, height) => [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
     const template = { templateId: "paper-cat-v1", viewBox: { x: 0, y: 0, width: 220, height: 300 }, silhouette: rect(0, 0, 220, 300), zones: { head: { zoneId: "head", layer: 1, tiePriority: 0, polygons: [rect(0, 0, 220, 110)] }, face: { zoneId: "face", layer: 2, tiePriority: 1, polygons: [rect(70, 50, 80, 50)] }, body: { zoneId: "body", layer: 0, tiePriority: 2, polygons: [rect(0, 110, 220, 150)] }, paws: { zoneId: "paws", layer: 2, tiePriority: 3, polygons: [rect(0, 260, 220, 40)] }, back: { zoneId: "back", layer: -1, tiePriority: 4, polygons: [rect(0, 110, 220, 190)] } } };
@@ -95,8 +113,10 @@ describe("renderer drag preview", () => {
     let world = createFixtureWorld({ "paper-cat-v1": { templateId: "paper-cat-v1", viewBox: { x: 0, y: 0, width: 220, height: 300 }, silhouette: rect(0, 0, 220, 300), zones } });
     world = applyCommand(world, { type: "setSheetState", sheetId: "sheet-car", state: "open" }).world;
     world = applyCommand(world, { type: "moveEntityInWorld", entityId: "sheet-nested", targetSurfaceId: "table", transform: { x: 1040, y: 180, rotation: 0, scale: .8 }, zPolicy: "front" }).world;
+    const sheetPose = getEntityWorldTransform(world, "sheet-nested");
     const held = applyCommand(world, { type: "holdEntity", entityId: "sheet-nested", catId: "cat-orange" }); expect(held.ok).toBe(true); world = held.world;
-    expect(world.entities["sheet-nested"].surfaceId).toBe("cat-orange-wear"); expect(world.entities["sheet-nested"].attachment).toEqual(expect.objectContaining({ kind: "held", catId: "cat-orange", zoneId: "paws", worldScaleBeforeHold: .8 }));
+    expect(world.entities["sheet-nested"].surfaceId).toBe("cat-orange-wear"); expect(world.entities["sheet-nested"].attachment).toEqual({ kind: "carried", catId: "cat-orange" });
+    expect(getEntityWorldTransform(world, "sheet-nested")).toEqual(expect.objectContaining({ x: expect.closeTo(sheetPose.x, 8), y: expect.closeTo(sheetPose.y, 8), rotation: expect.closeTo(sheetPose.rotation, 8), scale: expect.closeTo(sheetPose.scale, 8) }));
     const renderer = Object.create(PixiWorldRenderer.prototype), order = renderer.paintOrder(world).map((entity) => entity.id); expect(order.indexOf("sheet-nested")).toBeGreaterThan(order.indexOf("cat-orange"));
     const before = getEntityWorldTransform(world, "sheet-nested"), cat = getEntityWorldTransform(world, "cat-orange"); world = applyCommand(world, { type: "moveEntityInWorld", entityId: "cat-orange", targetSurfaceId: "table", transform: { ...cat, x: cat.x - 120, y: cat.y + 80 }, zPolicy: "front" }).world;
     const after = getEntityWorldTransform(world, "sheet-nested"); expect(after.x - before.x).toBeCloseTo(-120); expect(after.y - before.y).toBeCloseTo(80);

@@ -59,4 +59,20 @@ describe("cats and clothing", () => {
     const badAttachment = structuredClone(world); badAttachment.entities.hat.attachment.catId = "missing"; expect(validateWorld(badAttachment).errors.map((error) => error.code)).toContain("INVALID_ATTACHMENT");
     const badTemplate = structuredClone(world); badTemplate.rules.templates.cat.zones.head.polygons[0][2] = { x: 20, y: 20 }; expect(validateWorld(badTemplate).errors.map((error) => error.code)).toContain("INVALID_TEMPLATE");
   });
+
+  it("snaps only items into paws and carries ordinary paper without repositioning or scaling", () => {
+    let world = createWorld({ table: { width: 1000, height: 800 }, templates });
+    world = dispatch(world, drawing("cat-art"));
+    world = dispatch(world, { type: "createCat", catId: "cat", drawingId: "cat-art", attachmentSurfaceId: "cat-wear", templateId: "cat", targetSurfaceId: "table", transform: transform(100, 100, .2, .8) });
+    world = dispatch(world, { type: "createEntity", entity: { id: "item", kind: "paper", item: true, width: 40, height: 30, surfaceId: "table", transform: transform(410, 260, .1, 1.1), zIndex: 1 } });
+    world = dispatch(world, { type: "createEntity", entity: { id: "paper", kind: "paper", width: 120, height: 90, surfaceId: "table", transform: transform(390, 240, -.15, .9), zIndex: 2 } });
+    const paperPose = getEntityWorldTransform(world, "paper");
+
+    world = dispatch(world, { type: "holdEntity", entityId: "item", catId: "cat" });
+    expect(world.entities.item.attachment).toEqual(expect.objectContaining({ kind: "held", zoneId: "paws" }));
+    expect(world.entities.item.transform.scale).toBeLessThanOrEqual(.65);
+    world = dispatch(world, { type: "holdEntity", entityId: "paper", catId: "cat" });
+    expect(world.entities.paper.attachment).toEqual({ kind: "carried", catId: "cat" });
+    expect(getEntityWorldTransform(world, "paper")).toEqual(expect.objectContaining({ x: expect.closeTo(paperPose.x, 8), y: expect.closeTo(paperPose.y, 8), rotation: expect.closeTo(paperPose.rotation, 8), scale: expect.closeTo(paperPose.scale, 8) }));
+  });
 });

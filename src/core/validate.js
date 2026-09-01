@@ -102,7 +102,11 @@ export function validateWorldState(world) {
     }
     if (entity.attachment?.kind === "held") {
       const cat = entities[entity.attachment.catId];
-      if (!cat || cat.kind !== "cat" || entity.attachment.zoneId !== "paws" || entity.surfaceId !== cat.attachmentSurfaceId || !Number.isFinite(entity.attachment.worldScaleBeforeHold) || entity.attachment.worldScaleBeforeHold <= 0) add(errors, "INVALID_ATTACHMENT", `${path}.attachment`);
+      if (entity.item !== true || !cat || cat.kind !== "cat" || entity.attachment.zoneId !== "paws" || entity.surfaceId !== cat.attachmentSurfaceId || !Number.isFinite(entity.attachment.worldScaleBeforeHold) || entity.attachment.worldScaleBeforeHold <= 0) add(errors, "INVALID_ATTACHMENT", `${path}.attachment`);
+    }
+    if (entity.attachment?.kind === "carried") {
+      const cat = entities[entity.attachment.catId];
+      if (entity.item === true || !cat || cat.kind !== "cat" || entity.surfaceId !== cat.attachmentSurfaceId) add(errors, "INVALID_ATTACHMENT", `${path}.attachment`);
     }
   }
 
@@ -124,7 +128,7 @@ export function validateWorldState(world) {
     if (surface.kind === "cat-attachments") {
       const host = entities[surface.hostEntityId];
       if (!host || host.kind !== "cat" || host.attachmentSurfaceId !== surface.id) add(errors, "INVALID_ATTACHMENT", path);
-      for (const child of Object.values(entities).filter((entity) => entity.surfaceId === surface.id)) if (child.attachment?.catId !== host?.id || (!child.wearable && child.attachment?.kind !== "held")) add(errors, "INVALID_ATTACHMENT", `entities.${child.id}.surfaceId`);
+      for (const child of Object.values(entities).filter((entity) => entity.surfaceId === surface.id)) if (child.attachment?.catId !== host?.id || (!child.wearable && !["held", "carried"].includes(child.attachment?.kind))) add(errors, "INVALID_ATTACHMENT", `entities.${child.id}.surfaceId`);
     }
     validateTransform(surface.transform, rules, `${path}.transform`, errors);
     if (!isSimplePolygon(surface.placementArea, epsilon)) add(errors, "INVALID_POLYGON", `${path}.placementArea`);
@@ -134,7 +138,7 @@ export function validateWorldState(world) {
 
   for (const [id, entity] of Object.entries(entities)) {
     const surface = surfaces[entity.surfaceId];
-    if (surface && isSimplePolygon(surface.placementArea, epsilon) && entity.transform
+    if (surface && entity.attachment?.kind !== "carried" && isSimplePolygon(surface.placementArea, epsilon) && entity.transform
       && Number.isFinite(entity.transform.x) && Number.isFinite(entity.transform.y)
       && !pointInPolygon({ x: entity.transform.x, y: entity.transform.y }, surface.placementArea, epsilon)) {
       add(errors, "OUTSIDE_PLACEMENT_AREA", `entities.${id}.transform`, { surfaceId: entity.surfaceId });

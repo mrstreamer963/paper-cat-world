@@ -225,17 +225,19 @@ function holdEntity(world, command) {
   if (!isEntityVisibleQuery(world, entity.id) || !isEntityVisibleQuery(world, cat.id)) throw fail("TARGET_NOT_VISIBLE", "Entity and cat must be visible");
   const pose = command.worldTransform ?? getEntityWorldTransformQuery(world, entity.id), inverse = invertMatrix(getSurfaceWorldMatrixQuery(world, cat.attachmentSurfaceId), world.rules.geometryEpsilon);
   const localPose = inverse && decomposeMatrix(multiplyMatrices(inverse, matrixFromTransform(pose)), world.rules.geometryEpsilon);
-  const template = world.rules.templates[cat.templateId], local = localPose && { ...localPose, x: template.viewBox.x + template.viewBox.width * .5, y: template.viewBox.y + template.viewBox.height * .72, scale: Math.min(localPose.scale, .65) };
+  const template = world.rules.templates[cat.templateId], held = entity.item === true;
+  const local = localPose && (held ? { ...localPose, x: template.viewBox.x + template.viewBox.width * .5, y: template.viewBox.y + template.viewBox.height * .72, scale: Math.min(localPose.scale, .65) } : localPose);
   if (!local) throw fail("INVALID_TRANSFORM", "Held transform cannot be represented locally");
   requireSurface(world, cat.attachmentSurfaceId);
-  const updated = { ...entity, surfaceId: cat.attachmentSurfaceId, transform: cloneTransform(local), zIndex: nextZIndex(world, cat.attachmentSurfaceId), attachment: { kind: "held", catId: cat.id, zoneId: "paws", worldScaleBeforeHold: command.worldScaleBeforeHold ?? pose.scale } };
+  const attachment = held ? { kind: "held", catId: cat.id, zoneId: "paws", worldScaleBeforeHold: command.worldScaleBeforeHold ?? pose.scale } : { kind: "carried", catId: cat.id };
+  const updated = { ...entity, surfaceId: cat.attachmentSurfaceId, transform: cloneTransform(local), zIndex: nextZIndex(world, cat.attachmentSurfaceId), attachment };
   return { world: { ...world, entities: { ...world.entities, [entity.id]: updated } }, events: [{ type: "entityHeld", entityId: entity.id, catId: cat.id }] };
 }
 
 function releaseHeldEntity(world, command) {
   const entity = requireEntity(world, command.entityId);
-  if (entity.attachment?.kind !== "held") throw fail("INVALID_ATTACHMENT", "Entity is not held", { entityId: entity.id });
-  const currentPose = command.worldTransform ?? getEntityWorldTransformQuery(world, entity.id), pose = { ...currentPose, scale: entity.attachment.worldScaleBeforeHold }, targetSurfaceId = command.targetSurfaceId;
+  if (!['held', 'carried'].includes(entity.attachment?.kind)) throw fail("INVALID_ATTACHMENT", "Entity is not attached to a cat", { entityId: entity.id });
+  const currentPose = command.worldTransform ?? getEntityWorldTransformQuery(world, entity.id), pose = entity.attachment.kind === "held" ? { ...currentPose, scale: entity.attachment.worldScaleBeforeHold } : currentPose, targetSurfaceId = command.targetSurfaceId;
   const inverse = invertMatrix(getSurfaceWorldMatrixQuery(world, targetSurfaceId), world.rules.geometryEpsilon), local = inverse && decomposeMatrix(multiplyMatrices(inverse, matrixFromTransform(pose)), world.rules.geometryEpsilon);
   if (!local) throw fail("INVALID_TRANSFORM", "Released transform cannot be represented locally");
   const released = { ...entity, attachment: null }, moved = movedWorld({ ...world, entities: { ...world.entities, [entity.id]: released } }, released, targetSurfaceId, local, command.zPolicy ?? "front");
@@ -294,7 +296,7 @@ function createCutout(world, command) {
   const strokes = source.strokes.filter((s) => aabbIntersects(pointsAabb(s.points, s.width / 2), box)).map((s) => ({ ...cloneStroke(s), points: s.points.map((p) => ({ ...p, x: p.x - anchor.x, y: p.y - anchor.y })) }));
   const drawing = { id: drawingId, width: box.maxX - box.minX, height: box.maxY - box.minY, background: "transparent", strokes, revision: 0 };
   const position = command.worldPosition ?? command.position ?? anchor; const surfaceId = command.targetSurfaceId ?? world.table.surfaceId;
-  const entity = { id: entityId, kind: "cutout", label: command.label ?? "Вырезка", drawingId, contour: shifted, anchor: { x: 0, y: 0 }, width: drawing.width, height: drawing.height, surfaceId, transform: { x: position.x, y: position.y, rotation: 0, scale: 1 }, zIndex: nextZIndex(world, surfaceId) };
+  const entity = { id: entityId, kind: "cutout", item: true, label: command.label ?? "Вырезка", drawingId, contour: shifted, anchor: { x: 0, y: 0 }, width: drawing.width, height: drawing.height, surfaceId, transform: { x: position.x, y: position.y, rotation: 0, scale: 1 }, zIndex: nextZIndex(world, surfaceId) };
   const withDrawing = { ...world, drawings: { ...world.drawings, [drawingId]: drawing } }; const made = createEntity(withDrawing, { type: "createEntity", entity });
   return { world: made.world, events: [{ type: "drawingChanged", drawingId, revision: 0 }, ...made.events] };
 }
