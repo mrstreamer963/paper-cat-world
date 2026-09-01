@@ -4,6 +4,18 @@ import { PixiWorldRenderer } from "../../src/render/pixi-world-renderer.js";
 import { applyCommand, getEntityWorldTransform } from "../../src/core/index.js";
 
 describe("renderer drag preview", () => {
+  it("prefers the visually top surface where the garden home overlaps the pocket", () => {
+    const world = createFixtureWorld();
+    const renderer = Object.create(PixiWorldRenderer.prototype);
+    renderer.world = world;
+    renderer.screenToWorld = (point) => point;
+
+    const candidates = renderer.getSurfaceCandidates({ x: 1000, y: 650 });
+
+    expect(candidates.map((surface) => surface.id)).toEqual(expect.arrayContaining(["notebook-b-cover", "box-inside"]));
+    expect(candidates[0].id).toBe("notebook-b-cover");
+  });
+
   it("includes a cup configured as a holdable item in the demo", () => {
     const world = createFixtureWorld();
     expect(world.entities.cup).toEqual(expect.objectContaining({ kind: "cutout", item: true, label: "Чашка" }));

@@ -33,6 +33,14 @@ async function touchDragWorld(page, from, to) {
   await page.evaluate(async ({ a, b }) => { const canvas = document.querySelector("[data-testid=world-canvas]"), fire = (type, x, y, buttons) => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 71, pointerType: "touch", isPrimary: true, clientX: x, clientY: y, button: 0, buttons, pressure: buttons ? .5 : 0 })); fire("pointerdown", a.x, a.y, 1); for (let i = 1; i <= 8; i++) { fire("pointermove", a.x + (b.x - a.x) * i / 8, a.y + (b.y - a.y) * i / 8, 1); await new Promise((resolve) => setTimeout(resolve, 16)); } fire("pointerup", b.x, b.y, 0); }, { a, b });
 }
 
+test("drops the blue cat into the garden home instead of the overlapping pocket", async ({ page }) => {
+  await page.goto("/"); const main = page.locator("main");
+
+  await dragWorld(page, [335, 585], [1125, 720]);
+
+  await expect(main).toHaveAttribute("data-cat-blue-surface", "notebook-b-cover");
+});
+
 test("transports a cat in a closed sheet and restores it after opening", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "mobile-webkit", "covered by the touch-only transport test"); await page.goto("/"); const main = page.locator("main");
   await page.getByRole("button", { name: "Новый лист" }).click(); await page.getByRole("button", { name: "Открыть", exact: true }).click(); await page.waitForTimeout(260);
