@@ -200,7 +200,8 @@ function attachWearable(world, command) {
   const template = requireTemplate(world, cat.templateId), zone = template.zones[wearable.wearable.zoneId];
   if (!zone) throw fail("WEARABLE_ZONE_NOT_FOUND", "Wearable zone was not found");
   const zIndex = nextZIndex(world, cat.attachmentSurfaceId);
-  const fromWorldTransform = getEntityWorldTransformQuery(world, wearable.id);
+  const fromWorldTransform = command.fromWorldTransform ?? getEntityWorldTransformQuery(world, wearable.id);
+  assertTransform(world, fromWorldTransform);
   const updated = { ...wearable, surfaceId: cat.attachmentSurfaceId, transform: cloneTransform(wearable.wearable.templateTransform), zIndex, attachment: { catId: cat.id, zoneId: zone.zoneId } };
   return { world: { ...world, entities: { ...world.entities, [wearable.id]: updated } }, events: [{ type: "wearableAttached", wearableId: wearable.id, catId: cat.id, zoneId: zone.zoneId, fromWorldTransform }] };
 }

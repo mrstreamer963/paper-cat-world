@@ -4,6 +4,9 @@ import { createFixtureWorld } from "../../src/app/fixture.js";
 import { WorldStore } from "../../src/app/world-store.js";
 import { applyCommand, getEntityWorldTransform } from "../../src/core/index.js";
 
+const rectangle = (x, y, width, height) => [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
+const catTemplate = { templateId: "paper-cat-v1", viewBox: { x: 0, y: 0, width: 220, height: 300 }, silhouette: rectangle(0, 0, 220, 300), zones: { head: { zoneId: "head", layer: 1, tiePriority: 0, polygons: [rectangle(0, 0, 220, 110)] }, face: { zoneId: "face", layer: 2, tiePriority: 1, polygons: [rectangle(70, 50, 80, 50)] }, body: { zoneId: "body", layer: 0, tiePriority: 2, polygons: [rectangle(0, 110, 220, 150)] }, paws: { zoneId: "paws", layer: 2, tiePriority: 3, polygons: [rectangle(0, 260, 220, 40)] }, back: { zoneId: "back", layer: -1, tiePriority: 4, polygons: [rectangle(0, 110, 220, 190)] } } };
+
 describe("cat drop eligibility", () => {
   it("allows only items and clothing", () => {
     expect(canAttachToCat({ kind: "paper" })).toBe(false);
@@ -61,6 +64,19 @@ describe("cat drop eligibility", () => {
     controller.commit({ x: 459, y: 523.5 });
 
     expect(store.world.entities["sheet-car"].transform).toEqual(requested);
+  });
+
+  it("starts wearable attachment animation at the current drag preview", () => {
+    const world = createFixtureWorld({ "paper-cat-v1": catTemplate }), requested = { x: 1057.7803738317757, y: 174.97663551401877, rotation: 0, scale: 1 };
+    const store = new WorldStore(world), ui = { selectedEntityId: null, dragPreview: { entityId: "purple-hat", carriedEntityIds: [], transform: requested } };
+    let emittedEvents = [];
+    store.subscribe(({ events }) => { emittedEvents = events; });
+    const controller = Object.assign(Object.create(InteractionController.prototype), { store, ui, renderer: { hitTest: () => [world.entities["cat-orange"]], getSurfaceCandidates: () => [world.surfaces["cat-orange-wear"], world.surfaces.table], screenToWorld: (point) => point }, update: () => {}, notify: () => { throw new Error("drop unexpectedly rejected"); }, trace: null });
+
+    controller.commit({ x: 1300.5, y: 222 });
+
+    expect(store.world.entities["purple-hat"].attachment.catId).toBe("cat-orange");
+    expect(emittedEvents).toContainEqual(expect.objectContaining({ type: "wearableAttached", wearableId: "purple-hat", fromWorldTransform: requested }));
   });
 
 });
