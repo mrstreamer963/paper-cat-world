@@ -43,6 +43,17 @@ describe("sheets and notebooks", () => {
     const afterOuter = getEntityWorldTransform(world, "outer"), afterInner = getEntityWorldTransform(world, "inner"); expect(afterInner.x - afterOuter.x).not.toBeCloseTo(beforeInner.x - beforeOuter.x); expect(world.entities.inner.surfaceId).toBe("outer-inside"); expect(validateWorld(world)).toEqual({ ok: true });
   });
 
+  it("places a folded sheet by its visible half without changing the requested transform", () => {
+    let world = createWorld({ width: 1400, height: 900 });
+    world = run(world, sheet("car", "table", t(505, 650, -.04)));
+    const requested = t(-71.16822429906549, 477.5700934579439, -.04);
+
+    world = run(world, { type: "moveEntityInWorld", entityId: "car", targetSurfaceId: "table", transform: requested, zPolicy: "front" });
+
+    expect(world.entities.car.transform).toEqual(requested);
+    expect(validateWorld(world)).toEqual({ ok: true });
+  });
+
   it("validates every surface role, drawing reference and unique role link", () => {
     let world = createWorld({ width: 600, height: 400 }); world = run(world, sheet("valid"));
     const mismatched = { ...world, surfaces: { ...world.surfaces, "valid-inside": { ...world.surfaces["valid-inside"], kind: "sheet-outer-top" } } };

@@ -47,14 +47,15 @@ export function decomposeMatrix(matrix, epsilon = 1e-9) {
     return null;
   }
   const [a, b, c, d, x, y] = matrix;
-  const scale = Math.hypot(a, b);
-  if (scale <= epsilon || a * d - b * c <= 0) return null;
-  const tolerance = epsilon * Math.max(1, scale);
-  if (Math.abs(Math.hypot(c, d) - scale) > tolerance) return null;
-  if (Math.abs(a * c + b * d) > tolerance * scale) return null;
+  const measuredScale = Math.hypot(a, b);
+  if (measuredScale <= epsilon || a * d - b * c <= 0) return null;
+  const tolerance = epsilon * Math.max(1, measuredScale);
+  if (Math.abs(Math.hypot(c, d) - measuredScale) > tolerance) return null;
+  if (Math.abs(a * c + b * d) > tolerance * measuredScale) return null;
 
   const rotation = Math.atan2(b, a);
-  const expected = matrixFromTransform({ x, y, rotation, scale });
+  const expected = matrixFromTransform({ x, y, rotation, scale: measuredScale });
   if (expected.some((value, index) => Math.abs(value - matrix[index]) > tolerance)) return null;
+  const scale = Math.abs(measuredScale - 1) <= tolerance ? 1 : measuredScale;
   return { x, y, rotation, scale };
 }

@@ -16,6 +16,11 @@ describe("affine geometry", () => {
     expect(decomposeMatrix([1, 0, 0, -1, 0, 0])).toBeNull();
     expect(decomposeMatrix([2, 0, 0, 1, 0, 0])).toBeNull();
   });
+
+  it("normalizes floating-point unit scale to exactly one", () => {
+    const almostOne = 0.9999999999999999;
+    expect(decomposeMatrix([almostOne, 0, 0, almostOne, 12, 34])).toEqual({ x: 12, y: 34, rotation: 0, scale: 1 });
+  });
 });
 
 describe("polygon geometry", () => {

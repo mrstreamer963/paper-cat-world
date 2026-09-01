@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { canAttachToCat, surfaceCandidatesForDrop } from "../../src/app/interaction-controller.js";
+import { canAttachToCat, InteractionController, surfaceCandidatesForDrop } from "../../src/app/interaction-controller.js";
+import { createFixtureWorld } from "../../src/app/fixture.js";
+import { WorldStore } from "../../src/app/world-store.js";
+import { applyCommand, getEntityWorldTransform } from "../../src/core/index.js";
 
 describe("cat drop eligibility", () => {
   it("allows only items and clothing", () => {
@@ -28,4 +31,36 @@ describe("cat drop eligibility", () => {
 
     expect(surfaceCandidatesForDrop(world, { kind: "paper" }, hits, [ticketSurface, cover, table]).map((surface) => surface.id)).toEqual(["ticket-surface", "table", "home-cover"]);
   });
+
+  it("reparents loose objects carried off a nested surface", () => {
+    let world = createFixtureWorld();
+    for (const [entityId, x, y] of [["note-yellow", 150, 680], ["note-pink", 180, 700]]) {
+      const moved = applyCommand(world, { type: "moveEntityInWorld", entityId, targetSurfaceId: "notebook-a-cover", transform: { x, y, rotation: 0, scale: 1 }, zPolicy: "front" });
+      expect(moved.ok).toBe(true); world = moved.world;
+    }
+    const droppedTransform = { x: 600, y: 500, rotation: 0, scale: 1 };
+    const store = new WorldStore(world), ui = { selectedEntityId: null, dragPreview: { entityId: "note-yellow", carriedEntityIds: ["note-pink"], transform: droppedTransform } };
+    const controller = Object.assign(Object.create(InteractionController.prototype), { store, ui, renderer: { hitTest: () => [], getSurfaceCandidates: () => [world.surfaces.table], screenToWorld: (point) => point }, update: () => {}, notify: () => { throw new Error("drop unexpectedly rejected"); }, trace: null });
+    const companionBefore = getEntityWorldTransform(world, "note-pink");
+
+    controller.commit({ x: 600, y: 500 });
+
+    expect(store.world.entities["note-yellow"].surfaceId).toBe("table");
+    expect(getEntityWorldTransform(store.world, "note-yellow")).toEqual(droppedTransform);
+    expect(store.world.entities["note-pink"].surfaceId).toBe("table");
+    const companionAfter = getEntityWorldTransform(store.world, "note-pink");
+    expect(companionAfter.x - companionBefore.x).toBeCloseTo(450);
+    expect(companionAfter.y - companionBefore.y).toBeCloseTo(-180);
+  });
+
+  it("keeps the exact trace transform when dropping a folded sheet onto empty table space", () => {
+    const world = createFixtureWorld(), requested = { x: -71.16822429906549, y: 477.5700934579439, rotation: -.04, scale: 1 };
+    const store = new WorldStore(world), ui = { selectedEntityId: null, dragPreview: { entityId: "sheet-car", carriedEntityIds: [], transform: requested } };
+    const controller = Object.assign(Object.create(InteractionController.prototype), { store, ui, renderer: { hitTest: () => [], getSurfaceCandidates: () => [world.surfaces.table], screenToWorld: () => ({ x: 173.24766355140193, y: 492.58177570093454 }) }, update: () => {}, notify: () => { throw new Error("drop unexpectedly rejected"); }, trace: null });
+
+    controller.commit({ x: 459, y: 523.5 });
+
+    expect(store.world.entities["sheet-car"].transform).toEqual(requested);
+  });
+
 });

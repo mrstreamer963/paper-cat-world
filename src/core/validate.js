@@ -1,4 +1,5 @@
 import { isConvexPolygon, isFinitePoint, isSimplePolygon, pointInPolygon } from "./geometry/polygon.js";
+import { placementAnchor } from "./placement.js";
 
 const add = (errors, code, path, details = {}) => errors.push({ code, path, details });
 const validId = (value) => typeof value === "string" && value.length > 0;
@@ -138,9 +139,10 @@ export function validateWorldState(world) {
 
   for (const [id, entity] of Object.entries(entities)) {
     const surface = surfaces[entity.surfaceId];
+    const anchor = placementAnchor(entity);
     if (surface && entity.attachment?.kind !== "carried" && isSimplePolygon(surface.placementArea, epsilon) && entity.transform
       && Number.isFinite(entity.transform.x) && Number.isFinite(entity.transform.y)
-      && !pointInPolygon({ x: entity.transform.x, y: entity.transform.y }, surface.placementArea, epsilon)) {
+      && !pointInPolygon(anchor, surface.placementArea, epsilon)) {
       add(errors, "OUTSIDE_PLACEMENT_AREA", `entities.${id}.transform`, { surfaceId: entity.surfaceId });
     }
   }

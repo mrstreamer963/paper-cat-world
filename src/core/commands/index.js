@@ -2,6 +2,7 @@ import { fail, CoreError } from "../errors.js";
 import { matrixFromTransform, invertMatrix, multiplyMatrices, decomposeMatrix } from "../geometry/matrix.js";
 import { aabbIntersects, isFinitePoint, isSimplePolygon, normalizeClosedContour, pointInPolygon, pointsAabb, polygonCentroid, polygonIntersectionArea, signedPolygonArea } from "../geometry/polygon.js";
 import { getEntityWorldTransformQuery, getSurfaceWorldMatrixQuery, isEntityVisibleQuery, isSurfaceVisible } from "../queries.js";
+import { placementAnchor } from "../placement.js";
 import { validateWorldState } from "../validate.js";
 
 const COMMANDS = new Set(["createEntity", "deleteEntity", "moveEntity", "moveEntityInWorld", "setEntityTransform", "bringEntityToFront", "setSurfaceVisibility", "createDrawing", "deleteDrawing", "addStroke", "removeStroke", "createCutout", "createCat", "createWearableCutout", "attachWearable", "detachWearable", "holdEntity", "releaseHeldEntity", "createSheet", "toggleSheet", "setSheetState", "createNotebook", "setNotebookState", "setActiveSpread"]);
@@ -35,15 +36,16 @@ function requireSurface(world, surfaceId) {
   return surface;
 }
 
-function assertTarget(world, entityId, targetSurface, transform) {
+function assertTarget(world, entity, targetSurface, transform) {
   if (!isSurfaceVisible(world, targetSurface.id)) throw fail("TARGET_NOT_VISIBLE", "Target surface is not visible", { surfaceId: targetSurface.id });
-  if (!pointInPolygon({ x: transform.x, y: transform.y }, targetSurface.placementArea, world.rules.geometryEpsilon)) {
-    throw fail("OUTSIDE_PLACEMENT_AREA", "Entity anchor is outside the target placement area", { surfaceId: targetSurface.id, x: transform.x, y: transform.y });
+  const anchor = placementAnchor(entity, transform);
+  if (!pointInPolygon(anchor, targetSurface.placementArea, world.rules.geometryEpsilon)) {
+    throw fail("OUTSIDE_PLACEMENT_AREA", "Entity anchor is outside the target placement area", { surfaceId: targetSurface.id, x: anchor.x, y: anchor.y });
   }
   let hostEntityId = targetSurface.hostEntityId;
   const visited = new Set();
   while (hostEntityId !== null) {
-    if (hostEntityId === entityId || visited.has(hostEntityId)) throw fail("CYCLE_DETECTED", "Move would create a nesting cycle", { entityId, surfaceId: targetSurface.id });
+    if (hostEntityId === entity.id || visited.has(hostEntityId)) throw fail("CYCLE_DETECTED", "Move would create a nesting cycle", { entityId: entity.id, surfaceId: targetSurface.id });
     visited.add(hostEntityId);
     const host = requireEntity(world, hostEntityId);
     hostEntityId = requireSurface(world, host.surfaceId).hostEntityId;
@@ -60,7 +62,7 @@ function movedWorld(world, entity, targetSurfaceId, transform, zPolicy = "preser
   if (zPolicy !== "preserve" && zPolicy !== "front") throw fail("INVALID_REFERENCE", "Unknown zPolicy", { zPolicy });
   const targetSurface = requireSurface(world, targetSurfaceId);
   assertTransform(world, transform);
-  assertTarget(world, entity.id, targetSurface, transform);
+  assertTarget(world, entity, targetSurface, transform);
   const zIndex = zPolicy === "front" ? nextZIndex(world, targetSurfaceId) : entity.zIndex;
   const updated = { ...entity, surfaceId: targetSurfaceId, transform: cloneTransform(transform), zIndex };
   return {
@@ -339,11 +341,15 @@ function execute(world, command) {
   let transform = command.transform;
   if (command.type === "moveEntityInWorld") {
     assertTransform(world, command.transform);
-    const targetMatrix = getSurfaceWorldMatrixQuery(world, targetSurfaceId);
-    const inverse = invertMatrix(targetMatrix, world.rules.geometryEpsilon);
-    const localMatrix = inverse && multiplyMatrices(inverse, matrixFromTransform(command.transform));
-    transform = localMatrix && decomposeMatrix(localMatrix, world.rules.geometryEpsilon);
-    if (!transform) throw fail("INVALID_TRANSFORM", "World transform cannot be represented locally", { entityId: entity.id, surfaceId: targetSurfaceId });
+    const targetSurface = requireSurface(world, targetSurfaceId);
+    if (targetSurface.hostEntityId === null) transform = cloneTransform(command.transform);
+    else {
+      const targetMatrix = getSurfaceWorldMatrixQuery(world, targetSurfaceId);
+      const inverse = invertMatrix(targetMatrix, world.rules.geometryEpsilon);
+      const localMatrix = inverse && multiplyMatrices(inverse, matrixFromTransform(command.transform));
+      transform = localMatrix && decomposeMatrix(localMatrix, world.rules.geometryEpsilon);
+      if (!transform) throw fail("INVALID_TRANSFORM", "World transform cannot be represented locally", { entityId: entity.id, surfaceId: targetSurfaceId });
+    }
   }
   const next = movedWorld(world, entity, targetSurfaceId, transform, command.zPolicy);
   return { world: next, events: [{ type: "entityMoved", entityId: entity.id, fromSurfaceId: entity.surfaceId, toSurfaceId: targetSurfaceId }] };
