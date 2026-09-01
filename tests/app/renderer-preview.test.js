@@ -46,6 +46,27 @@ describe("renderer drag preview", () => {
     expect(order.indexOf("ticket")).toBeGreaterThan(order.indexOf("box"));
   });
 
+  it("does not let selection override the model z-order", () => {
+    const base = createFixtureWorld(), renderer = Object.create(PixiWorldRenderer.prototype);
+    const world = { ...base, entities: { ...base.entities,
+      "notebook-home-a": { ...base.entities["notebook-home-a"], zIndex: 21 },
+      "note-pink": { ...base.entities["note-pink"], zIndex: 22 },
+    } };
+
+    const order = renderer.displayOrder(world, { selectedEntityId: "notebook-home-a", dragPreview: null }).map((entity) => entity.id);
+
+    expect(order.indexOf("note-pink")).toBeGreaterThan(order.indexOf("notebook-home-a"));
+  });
+
+  it("does not let selection override hit testing", () => {
+    const world = createFixtureWorld(), renderer = Object.create(PixiWorldRenderer.prototype);
+    renderer.world = world; renderer.lastUi = { selectedEntityId: "folder" }; renderer.screenToWorld = (point) => point;
+
+    const hits = renderer.hitTest({ x: 260, y: 220 }).map((entity) => entity.id);
+
+    expect(hits.indexOf("ticket")).toBeLessThan(hits.indexOf("folder"));
+  });
+
   it("sorts cat attachments by zone layer around the cat body", () => {
     const rect = (x, y, width, height) => [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
     const template = { templateId: "paper-cat-v1", viewBox: { x: 0, y: 0, width: 220, height: 300 }, silhouette: rect(0, 0, 220, 300), zones: { head: { zoneId: "head", layer: 1, tiePriority: 0, polygons: [rect(0, 0, 220, 110)] }, face: { zoneId: "face", layer: 2, tiePriority: 1, polygons: [rect(70, 50, 80, 50)] }, body: { zoneId: "body", layer: 0, tiePriority: 2, polygons: [rect(0, 110, 220, 150)] }, paws: { zoneId: "paws", layer: 2, tiePriority: 3, polygons: [rect(0, 260, 220, 40)] }, back: { zoneId: "back", layer: -1, tiePriority: 4, polygons: [rect(0, 110, 220, 190)] } } };
