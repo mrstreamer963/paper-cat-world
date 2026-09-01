@@ -25,18 +25,18 @@ test("corrupt and future imports leave the current scene untouched", async ({ pa
   await page.locator("[data-import]").setInputFiles({ name: "future.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ format: "paper-cat-world", schemaVersion: 999 })) }); await expect(page.getByRole("status")).toContainText("более новой версией"); await expect(main).toHaveAttribute("data-entity-count", count);
 });
 
-test("reload offers the latest autosave and restore recreates it", async ({ page }) => {
+test("reload automatically restores the latest autosave", async ({ page }) => {
   await page.goto("/"); const main = page.locator("main"), initial = Number(await main.getAttribute("data-entity-count")); await page.getByRole("button", { name: "Новый лист" }).click(); const changed = Number(await main.getAttribute("data-entity-count")); expect(changed).toBeGreaterThan(initial); await page.waitForTimeout(550);
-  await page.reload(); await expect(page.getByRole("heading", { name: "Восстановить мир?" })).toBeVisible(); await page.getByRole("button", { name: "Восстановить" }).click(); await expect(main).toHaveAttribute("data-entity-count", String(changed));
+  await page.reload(); await expect(main).toHaveAttribute("data-entity-count", String(changed));
   await page.keyboard.press("ControlOrMeta+z"); await expect(main).toHaveAttribute("data-entity-count", String(changed));
 });
 
-test("declining autosave starts clean and replaces the recovery snapshot", async ({ page }) => {
-  await page.goto("/"); const main = page.locator("main"); await expect(main).toHaveAttribute("data-entity-count", /\d+/); const initial = await main.getAttribute("data-entity-count"); await page.getByRole("button", { name: "Новый лист" }).click(); await page.waitForTimeout(550); await page.reload(); await page.getByRole("button", { name: "Начать новый мир" }).click(); await expect(main).toHaveAttribute("data-entity-count", initial); await page.waitForTimeout(550); await page.reload(); await page.getByRole("button", { name: "Восстановить" }).click(); await expect(main).toHaveAttribute("data-entity-count", initial);
+test("starting a new world replaces the recovery snapshot", async ({ page }) => {
+  await page.goto("/"); const main = page.locator("main"); await expect(main).toHaveAttribute("data-entity-count", /\d+/); const initial = await main.getAttribute("data-entity-count"); await page.getByRole("button", { name: "Новый лист" }).click(); await page.waitForTimeout(550); await page.reload(); await page.getByRole("button", { name: "Начать новый мир" }).click(); await expect(main).toHaveAttribute("data-entity-count", initial); await page.waitForTimeout(550); await page.reload(); await expect(main).toHaveAttribute("data-entity-count", initial);
 });
 
 test("a corrupt autosave is reported and retained for diagnostics", async ({ page }) => {
-  await page.goto("/"); await page.evaluate(() => localStorage.setItem("paper-cat-world:autosave:v1", "{broken")); await page.reload(); await expect(page.getByRole("status")).toContainText("повреждён"); expect(await page.evaluate(() => localStorage.getItem("paper-cat-world:autosave:v1"))).toBe("{broken"); await expect(page.getByRole("heading", { name: "Восстановить мир?" })).toBeHidden();
+  await page.goto("/"); await page.evaluate(() => localStorage.setItem("paper-cat-world:autosave:v1", "{broken")); await page.reload(); await expect(page.getByRole("status")).toContainText("повреждён"); expect(await page.evaluate(() => localStorage.getItem("paper-cat-world:autosave:v1"))).toBe("{broken");
 });
 
 test("all visible interactive controls meet the 44px target", async ({ page }) => {
