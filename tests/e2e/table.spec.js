@@ -83,13 +83,12 @@ test("mobile-webkit supports two-pointer pinch and pen drawing without hover", a
   await page.getByRole("button", { name: "Создать кота" }).tap(); await expect(main).toHaveAttribute("data-cat-count", "3");
 });
 
-test("double tap, action button and drag never toggle a sheet twice", async ({ page }, testInfo) => {
+test("an action button can immediately reverse a double-tap fold", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "mobile-webkit", "desktop gesture conflict acceptance"); await page.goto("/"); const main = page.locator("main");
   await page.getByRole("button", { name: "Новый лист" }).click(); const point = await worldScreen(page, 710, 350);
   await page.mouse.dblclick(point.x, point.y, { delay: 80 }); await expect(main).toHaveAttribute("data-selected-state", "open");
-  await page.getByRole("button", { name: "Закрыть", exact: true }).click(); await expect(page.getByRole("status")).toContainText("Дождитесь окончания анимации"); await expect(main).toHaveAttribute("data-selected-state", "open");
-  await page.waitForTimeout(260); await dragWorld(page, [560, 350], [760, 480]); await expect(main).toHaveAttribute("data-selected-state", "open");
   await page.getByRole("button", { name: "Закрыть", exact: true }).click(); await expect(main).toHaveAttribute("data-selected-state", "closed");
+  await page.waitForTimeout(260); await dragWorld(page, [710, 350], [760, 480]); await expect(main).toHaveAttribute("data-selected-state", "closed");
 });
 
 test("creates a cat atomically and draws wearable clothing that attaches", async ({ page }) => {
