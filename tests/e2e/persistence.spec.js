@@ -4,7 +4,7 @@ test("export/import round-trip is atomic and resets undo history", async ({ page
   test.skip(testInfo.project.name === "mobile-webkit", "file download round-trip is covered in Chromium");
   await page.goto("/"); const main = page.locator("main"), initial = Number(await main.getAttribute("data-entity-count"));
   await page.getByRole("button", { name: "Новый лист" }).click(); const savedCount = Number(await main.getAttribute("data-entity-count")); expect(savedCount).toBeGreaterThan(initial);
-  const downloadPromise = page.waitForEvent("download"); await page.getByRole("button", { name: "Экспорт" }).click(); const download = await downloadPromise, path = await download.path(); expect(download.suggestedFilename()).toMatch(/^paper-cat-world-\d{4}-\d{2}-\d{2}\.json$/);
+  const downloadPromise = page.waitForEvent("download"); await page.getByRole("button", { name: "Сохранить" }).click(); const download = await downloadPromise, path = await download.path(); expect(download.suggestedFilename()).toMatch(/^paper-cat-world-\d{4}-\d{2}-\d{2}\.json$/);
   const text = await (await import("node:fs/promises")).readFile(path, "utf8"), envelope = JSON.parse(text);
   expect(envelope).toMatchObject({ format: "paper-cat-world", schemaVersion: 1 }); expect(envelope.world.rules).toBeUndefined(); expect(Object.keys(envelope.world.entities)).toEqual(Object.keys(envelope.world.entities).sort());
   await page.getByRole("button", { name: "Новая тетрадь" }).click(); expect(Number(await main.getAttribute("data-entity-count"))).toBeGreaterThan(savedCount);
@@ -14,7 +14,7 @@ test("export/import round-trip is atomic and resets undo history", async ({ page
 
 test("two different cats are visually identical after JSON round-trip", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "mobile-webkit", "visual file round-trip is covered on desktop engines"); await page.goto("/"); const canvas = page.getByTestId("world-canvas"), main = page.locator("main"); await expect(canvas).toBeVisible(); const before = await canvas.evaluate((node) => node.toDataURL()); await expect(main).toHaveAttribute("data-cat-count", "2");
-  const downloadPromise = page.waitForEvent("download"); await page.getByRole("button", { name: "Экспорт" }).click(); const path = await (await downloadPromise).path(); await page.getByRole("button", { name: "Новый лист" }).click(); await page.locator("[data-import]").setInputFiles(path); await expect(main).toHaveAttribute("data-cat-count", "2"); expect(await canvas.evaluate((node) => node.toDataURL())).toBe(before);
+  const downloadPromise = page.waitForEvent("download"); await page.getByRole("button", { name: "Сохранить" }).click(); const path = await (await downloadPromise).path(); await page.getByRole("button", { name: "Новый лист" }).click(); await page.locator("[data-import]").setInputFiles(path); await expect(main).toHaveAttribute("data-cat-count", "2"); expect(await canvas.evaluate((node) => node.toDataURL())).toBe(before);
 });
 
 test("corrupt and future imports leave the current scene untouched", async ({ page }, testInfo) => {

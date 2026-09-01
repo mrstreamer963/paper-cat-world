@@ -41,6 +41,15 @@ test("drops the blue cat into the garden home instead of the overlapping pocket"
   await expect(main).toHaveAttribute("data-cat-blue-surface", "notebook-b-cover");
 });
 
+test("keeps a loose cat in front while it rides on a closed notebook", async ({ page }) => {
+  await page.goto("/"); const main = page.locator("main");
+  await dragWorld(page, [335, 585], [172, 615]);
+  await expect(main).toHaveAttribute("data-cat-blue-surface", "notebook-a-cover");
+  await dragWorld(page, [290, 647], [297, 555]);
+
+  await expect(main).toHaveAttribute("data-cat-blue-surface", "notebook-a-cover");
+});
+
 test("transports a cat in a closed sheet and restores it after opening", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "mobile-webkit", "covered by the touch-only transport test"); await page.goto("/"); const main = page.locator("main");
   await page.getByRole("button", { name: "Новый лист" }).click(); await page.getByRole("button", { name: "Открыть", exact: true }).click(); await page.waitForTimeout(260);

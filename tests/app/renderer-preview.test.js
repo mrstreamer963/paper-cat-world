@@ -71,6 +71,21 @@ describe("renderer drag preview", () => {
     expect(renderer.isInEntityBranch(world, "note-pink", "folder")).toBe(false);
   });
 
+  it("carries a small paper resting on a notebook but lets paper slide out from under it", () => {
+    const renderer = Object.create(PixiWorldRenderer.prototype);
+    const base = createFixtureWorld();
+    const notebook = { ...base.entities["notebook-home-a"], transform: { x: 200, y: 200, rotation: 0, scale: 1 }, zIndex: 10 };
+    const paper = { ...base.entities["note-pink"], transform: { x: 280, y: 250, rotation: 0, scale: 1 }, zIndex: 11 };
+    const world = { ...base, entities: { ...base.entities, [notebook.id]: notebook, [paper.id]: paper } };
+
+    expect(renderer.dragCompanionIds(world, notebook.id)).toContain(paper.id);
+    expect(renderer.dragCompanionIds(world, paper.id)).not.toContain(notebook.id);
+
+    const notebookPose = getEntityWorldTransform(world, notebook.id), before = getEntityWorldTransform(world, paper.id);
+    const during = renderer.previewPose(world, paper, { entityId: notebook.id, carriedEntityIds: [paper.id], transform: { ...notebookPose, x: notebookPose.x + 70 } });
+    expect(during.x - before.x).toBeCloseTo(70);
+  });
+
   it("keeps an item dropped on a note in that note's moving branch", () => {
     let world = createFixtureWorld();
     const ticketPose = { ...getEntityWorldTransform(world, "ticket"), x: 680, y: 570 };
