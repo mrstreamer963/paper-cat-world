@@ -91,6 +91,14 @@ test("an action button can immediately reverse a double-tap fold", async ({ page
   await page.waitForTimeout(260); await dragWorld(page, [710, 350], [760, 480]); await expect(main).toHaveAttribute("data-selected-state", "closed");
 });
 
+test("a notebook can immediately reverse its fold from the canvas", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "mobile-webkit", "desktop gesture acceptance"); await page.goto("/"); const main = page.locator("main");
+  await page.getByRole("button", { name: "Новая тетрадь" }).click(); const point = await worldScreen(page, 510, 310);
+  await page.mouse.dblclick(point.x, point.y, { delay: 80 }); await expect(main).toHaveAttribute("data-selected-state", "open");
+  await page.mouse.dblclick(point.x, point.y, { delay: 80 }); await expect(main).toHaveAttribute("data-selected-state", "closed");
+  await expect(page.getByRole("status")).not.toContainText("Дождитесь окончания анимации");
+});
+
 test("creates a cat atomically and draws wearable clothing that attaches", async ({ page }) => {
   await page.goto("/"); const main = page.locator("main");
   await expect(main).toHaveAttribute("data-cat-count", "2");
