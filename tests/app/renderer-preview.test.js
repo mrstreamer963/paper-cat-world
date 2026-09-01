@@ -4,6 +4,18 @@ import { PixiWorldRenderer } from "../../src/render/pixi-world-renderer.js";
 import { applyCommand, getEntityWorldTransform } from "../../src/core/index.js";
 
 describe("renderer drag preview", () => {
+  it("culls an offscreen host branch while preserving in-viewport entities", () => {
+    const world = createFixtureWorld(), renderer = Object.create(PixiWorldRenderer.prototype);
+    renderer.camera = { viewport: { width: 500, height: 400 } }; renderer.cullingMargin = 0; renderer.screenToWorld = (point) => point;
+    const order = renderer.culledDisplayOrder(world, { selectedEntityId: null, dragPreview: null }).map((entity) => entity.id);
+    expect(order).toContain("folder"); expect(order).toContain("ticket"); expect(order).not.toContain("box");
+  });
+
+  it("computes rotated world AABBs without changing model geometry", () => {
+    const world = createFixtureWorld(), renderer = Object.create(PixiWorldRenderer.prototype), before = structuredClone(world.entities["note-pink"]);
+    const bounds = renderer.entityWorldAabb(world, world.entities["note-pink"]);
+    expect(bounds.maxX).toBeGreaterThan(bounds.minX); expect(bounds.maxY).toBeGreaterThan(bounds.minY); expect(world.entities["note-pink"]).toEqual(before);
+  });
   it("prefers the visually top surface where the garden home overlaps the pocket", () => {
     const world = createFixtureWorld();
     const renderer = Object.create(PixiWorldRenderer.prototype);

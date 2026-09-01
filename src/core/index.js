@@ -10,6 +10,7 @@ export const getEntityWorldTransform = getEntityWorldTransformQuery;
 export const getSurfaceWorldMatrix = getSurfaceWorldMatrixQuery;
 export const isEntityVisible = isEntityVisibleQuery;
 export { isSurfaceVisible, isSurfaceLocallyVisible };
+export * from "./persistence.js";
 
 export * from "./geometry/matrix.js";
 export * from "./geometry/polygon.js";

@@ -9,5 +9,6 @@ export class WorldStore {
   undo() { return this.navigate(undo(this.history)); }
   redo() { return this.navigate(redo(this.history)); }
   navigate(r) { if (!r.ok) return r; this.history = r.history; this.world = r.world; this.emit(r.events); return r; }
+  replace(world, events = [{ type: "worldReplaced" }]) { this.world = world; this.history = createHistory(world); this.emit(events); return { ok: true, world, history: this.history, events }; }
   emit(events) { for (const fn of this.listeners) fn({ world: this.world, events }); }
 }

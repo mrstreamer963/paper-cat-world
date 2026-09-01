@@ -74,6 +74,15 @@ test("mobile-webkit transports a cat using touch pointers only", async ({ page }
   await touchDragWorld(page, [335, 585], [650, 500]); await expect(main).toHaveAttribute("data-cat-blue-surface", "sheet-created-1-inside");
 });
 
+test("mobile-webkit supports two-pointer pinch and pen drawing without hover", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-webkit", "touch and pen acceptance"); await page.goto("/"); await expect(page.getByTestId("world-canvas")).toBeVisible(); const main = page.locator("main"), beforeZoom = Number(await main.getAttribute("data-camera-zoom"));
+  await page.evaluate(async () => { const canvas = document.querySelector("[data-testid=world-canvas]"), fire = (type, id, x, y, buttons) => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: id, pointerType: "touch", isPrimary: id === 1, clientX: x, clientY: y, buttons })); fire("pointerdown", 1, 140, 260, 1); fire("pointerdown", 2, 240, 260, 1); fire("pointermove", 1, 90, 260, 1); fire("pointermove", 2, 290, 260, 1); await new Promise((resolve) => setTimeout(resolve, 20)); fire("pointerup", 1, 90, 260, 0); fire("pointerup", 2, 290, 260, 0); });
+  expect(Number(await main.getAttribute("data-camera-zoom"))).toBeGreaterThan(beforeZoom);
+  await page.getByRole("button", { name: "Новый кот" }).tap(); const canvas = page.getByTestId("drawing-canvas"), box = await canvas.boundingBox();
+  await page.evaluate(({ x, y }) => { const canvas = document.querySelector("[data-testid=drawing-canvas]"), fire = (type, px, py, buttons) => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 91, pointerType: "pen", isPrimary: true, clientX: px, clientY: py, buttons, pressure: buttons ? .7 : 0 })); fire("pointerdown", x, y, 1); fire("pointermove", x + 20, y + 80, 1); fire("pointerup", x + 20, y + 80, 0); }, { x: box.x + box.width / 2, y: box.y + box.height / 3 });
+  await page.getByRole("button", { name: "Создать кота" }).tap(); await expect(main).toHaveAttribute("data-cat-count", "3");
+});
+
 test("double tap, action button and drag never toggle a sheet twice", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "mobile-webkit", "desktop gesture conflict acceptance"); await page.goto("/"); const main = page.locator("main");
   await page.getByRole("button", { name: "Новый лист" }).click(); const point = await worldScreen(page, 710, 350);

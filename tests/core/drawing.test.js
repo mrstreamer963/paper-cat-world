@@ -43,4 +43,11 @@ describe("drawing, cutting and history", () => {
     expect(destroyed).toEqual(["a:0"]);
     expect(cache.get({ id: "b", revision: 0 })).toBe("b:0");
   });
+
+  it("keeps separate LOD entries and evicts the least recently used invisible entry", () => {
+    const destroyed = [], cache = new DrawingTextureCache((item, lod) => `${item.id}:${lod}`, (item) => destroyed.push(item), { maxEntries: 2 });
+    const a = { id: "a", revision: 0 }, b = { id: "b", revision: 0 };
+    expect(cache.get(a, { lod: 1, visible: false })).toBe("a:1"); expect(cache.get(a, { lod: .5 })).toBe("a:0.5"); expect(cache.get(b)).toBe("b:1");
+    expect(cache.size).toBe(2); expect(destroyed).toContain("a:1"); expect(cache.get(a, { lod: 1 })).toBe("a:1");
+  });
 });

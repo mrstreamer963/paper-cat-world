@@ -1,2 +1,2 @@
 import { defineConfig } from "vitest/config";
-export default defineConfig({ test: { exclude: ["tests/e2e/**", "node_modules/**"] } });
+export default defineConfig({ test: { exclude: ["tests/e2e/**", "tests/production/**", "node_modules/**"] } });
