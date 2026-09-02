@@ -4,6 +4,22 @@ import { placementAnchor } from "./placement.js";
 const add = (errors, code, path, details = {}) => errors.push({ code, path, details });
 const validId = (value) => typeof value === "string" && value.length > 0;
 const CAT_ZONE_IDS = new Set(["head", "face", "body", "paws", "back"]);
+const polygonValidationCache = new WeakMap();
+
+function polygonSignature(points) {
+  let signature = `${points.length}`;
+  for (const point of points) signature += `|${point?.x},${point?.y}`;
+  return signature;
+}
+
+function cachedSimplePolygon(points, epsilon) {
+  if (!Array.isArray(points)) return false;
+  const signature = polygonSignature(points), cached = polygonValidationCache.get(points);
+  if (cached?.epsilon === epsilon && cached.signature === signature) return cached.result;
+  const result = isSimplePolygon(points, epsilon);
+  polygonValidationCache.set(points, { epsilon, signature, result });
+  return result;
+}
 
 function validateTransform(transform, rules, path, errors) {
   if (!transform || typeof transform !== "object") {
@@ -40,7 +56,7 @@ export function validateWorldState(world) {
 
   for (const [templateId, template] of Object.entries(templates)) {
     const path = `rules.templates.${templateId}`;
-    if (!template || template.templateId !== templateId || !template.viewBox || !Number.isFinite(template.viewBox.x) || !Number.isFinite(template.viewBox.y) || !Number.isFinite(template.viewBox.width) || template.viewBox.width <= 0 || !Number.isFinite(template.viewBox.height) || template.viewBox.height <= 0 || !isSimplePolygon(template.silhouette, epsilon) || !template.zones || typeof template.zones !== "object" || Object.keys(template.zones).length === 0) { add(errors, "INVALID_TEMPLATE", path); continue; }
+    if (!template || template.templateId !== templateId || !template.viewBox || !Number.isFinite(template.viewBox.x) || !Number.isFinite(template.viewBox.y) || !Number.isFinite(template.viewBox.width) || template.viewBox.width <= 0 || !Number.isFinite(template.viewBox.height) || template.viewBox.height <= 0 || !cachedSimplePolygon(template.silhouette, epsilon) || !template.zones || typeof template.zones !== "object" || Object.keys(template.zones).length === 0) { add(errors, "INVALID_TEMPLATE", path); continue; }
     if ([...CAT_ZONE_IDS].some((zoneId) => !template.zones[zoneId]) || Object.keys(template.zones).some((zoneId) => !CAT_ZONE_IDS.has(zoneId))) add(errors, "INVALID_TEMPLATE", `${path}.zones`);
     for (const [zoneId, zone] of Object.entries(template.zones)) if (!zone || zone.zoneId !== zoneId || !Number.isFinite(zone.layer) || !Number.isFinite(zone.tiePriority) || !Array.isArray(zone.polygons) || zone.polygons.length === 0 || zone.polygons.some((polygon) => !isConvexPolygon(polygon, epsilon))) add(errors, "INVALID_TEMPLATE", `${path}.zones.${zoneId}`);
   }
@@ -70,7 +86,7 @@ export function validateWorldState(world) {
     if (!Number.isFinite(entity.zIndex)) add(errors, "INVALID_NUMBER", `${path}.zIndex`, { value: entity.zIndex });
     if (entity.kind === "cutout") {
       if (!drawings[entity.drawingId]) add(errors, "DRAWING_NOT_FOUND", `${path}.drawingId`);
-      if (!isFinitePoint(entity.anchor) || !isSimplePolygon(entity.contour, epsilon)) add(errors, "INVALID_CONTOUR", `${path}.contour`);
+      if (!isFinitePoint(entity.anchor) || !cachedSimplePolygon(entity.contour, epsilon)) add(errors, "INVALID_CONTOUR", `${path}.contour`);
     }
     if (entity.kind === "cat") {
       if (!templates[entity.templateId]) add(errors, "TEMPLATE_NOT_FOUND", `${path}.templateId`);
@@ -132,7 +148,7 @@ export function validateWorldState(world) {
       for (const child of Object.values(entities).filter((entity) => entity.surfaceId === surface.id)) if (child.attachment?.catId !== host?.id || (!child.wearable && !["held", "carried"].includes(child.attachment?.kind))) add(errors, "INVALID_ATTACHMENT", `entities.${child.id}.surfaceId`);
     }
     validateTransform(surface.transform, rules, `${path}.transform`, errors);
-    if (!isSimplePolygon(surface.placementArea, epsilon)) add(errors, "INVALID_POLYGON", `${path}.placementArea`);
+    if (!cachedSimplePolygon(surface.placementArea, epsilon)) add(errors, "INVALID_POLYGON", `${path}.placementArea`);
     if (surface.localVisibility !== "visible" && surface.localVisibility !== "hidden") add(errors, "INVALID_REFERENCE", `${path}.localVisibility`, { value: surface.localVisibility });
   }
   if (rootCount !== 1 || !surfaces[world.table?.surfaceId]) add(errors, "INVALID_REFERENCE", "table.surfaceId", { rootCount });
@@ -140,7 +156,7 @@ export function validateWorldState(world) {
   for (const [id, entity] of Object.entries(entities)) {
     const surface = surfaces[entity.surfaceId];
     const anchor = placementAnchor(entity);
-    if (surface && entity.attachment?.kind !== "carried" && isSimplePolygon(surface.placementArea, epsilon) && entity.transform
+    if (surface && entity.attachment?.kind !== "carried" && cachedSimplePolygon(surface.placementArea, epsilon) && entity.transform
       && Number.isFinite(entity.transform.x) && Number.isFinite(entity.transform.y)
       && !pointInPolygon(anchor, surface.placementArea, epsilon)) {
       add(errors, "OUTSIDE_PLACEMENT_AREA", `entities.${id}.transform`, { surfaceId: entity.surfaceId });

@@ -35,6 +35,23 @@ describe("cat drop eligibility", () => {
     expect(surfaceCandidatesForDrop(world, { kind: "paper" }, hits, [ticketSurface, cover, table]).map((surface) => surface.id)).toEqual(["ticket-surface", "table", "home-cover"]);
   });
 
+  it("ignores the dragged entity branch when ranking drop surfaces", () => {
+    const table = { id: "table", kind: "table", hostEntityId: null };
+    const draggedTop = { id: "dragged-top", kind: "sheet-outer-top", hostEntityId: "dragged" };
+    const targetInside = { id: "target-inside", kind: "sheet-inside", hostEntityId: "target" };
+    const world = {
+      entities: {
+        dragged: { id: "dragged", kind: "sheet", surfaceId: "table" },
+        child: { id: "child", kind: "paper", surfaceId: "dragged-top" },
+        target: { id: "target", kind: "sheet", surfaceId: "table" },
+      },
+      surfaces: { table, "dragged-top": draggedTop, "target-inside": targetInside },
+    };
+    const hits = [world.entities.child, world.entities.dragged, world.entities.target];
+
+    expect(surfaceCandidatesForDrop(world, world.entities.dragged, hits, [draggedTop, targetInside, table]).map((surface) => surface.id)).toEqual(["target-inside", "table"]);
+  });
+
   it("reparents loose objects carried off a nested surface", () => {
     let world = createFixtureWorld();
     for (const [entityId, x, y] of [["note-yellow", 150, 680], ["note-pink", 180, 700]]) {
@@ -64,6 +81,16 @@ describe("cat drop eligibility", () => {
     controller.commit({ x: 459, y: 523.5 });
 
     expect(store.world.entities["sheet-car"].transform).toEqual(requested);
+  });
+
+  it("keeps the exact trace transform when dropping a cutout on an ordinary surface", () => {
+    const world = createFixtureWorld(), requested = { x: 880.25, y: 360.75, rotation: .17, scale: .9 };
+    const store = new WorldStore(world), ui = { selectedEntityId: null, dragPreview: { entityId: "cup", carriedEntityIds: [], transform: requested } };
+    const controller = Object.assign(Object.create(InteractionController.prototype), { store, ui, renderer: { hitTest: () => [], getSurfaceCandidates: () => [world.surfaces.table], screenToWorld: (point) => point }, update: () => {}, notify: () => { throw new Error("drop unexpectedly rejected"); }, trace: null });
+
+    controller.commit({ x: requested.x, y: requested.y });
+
+    expect(store.world.entities.cup.transform).toEqual(requested);
   });
 
   it("starts wearable attachment animation at the current drag preview", () => {

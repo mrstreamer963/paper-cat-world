@@ -45,8 +45,11 @@ describe("sheets and notebooks", () => {
 
   it("places a folded sheet by its visible half without changing the requested transform", () => {
     let world = createWorld({ width: 1400, height: 900 });
-    world = run(world, sheet("car", "table", t(505, 650, -.04)));
     const requested = t(-71.16822429906549, 477.5700934579439, -.04);
+    world = run(world, sheet("created", "table", requested));
+    expect(world.entities.created.transform).toEqual(requested);
+
+    world = run(world, sheet("car", "table", t(505, 650, -.04)));
 
     world = run(world, { type: "moveEntityInWorld", entityId: "car", targetSurfaceId: "table", transform: requested, zPolicy: "front" });
 

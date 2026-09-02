@@ -19,4 +19,29 @@ describe("drawing editor fold guide", () => {
     expect(DrawingEditor.prototype.showsFoldGuide.call(editor("top-art"))).toBe(false);
     expect(DrawingEditor.prototype.showsFoldGuide.call(editor("inside-art", "paper"))).toBe(false);
   });
+
+  it("reports a stale source entity instead of throwing while cutting", () => {
+    const notifications = [];
+    const staleEditor = {
+      draft: null,
+      drawingId: "missing-art",
+      entityId: "missing",
+      store: { world: { entities: {}, table: { surfaceId: "table" } } },
+      notify: (code) => notifications.push(code),
+    };
+
+    expect(() => DrawingEditor.prototype.cut.call(staleEditor, [])).not.toThrow();
+    expect(notifications).toEqual(["ENTITY_NOT_FOUND"]);
+  });
+
+  it("does not invalidate the committed layer while only the pointer preview changes", () => {
+    const layerEditor = { canvas: { width: 800, height: 600 }, camera: { x: 10, y: 20, zoom: 2 }, draft: null, showsFoldGuide: () => false };
+    const drawing = { id: "art", revision: 3, strokes: [{ id: "fixed" }] };
+    layerEditor.preview = { points: [{ x: 1, y: 1 }] };
+    const first = DrawingEditor.prototype.committedLayerKey.call(layerEditor, drawing);
+    layerEditor.preview = { points: [{ x: 50, y: 80 }] };
+    const second = DrawingEditor.prototype.committedLayerKey.call(layerEditor, drawing);
+
+    expect(second).toBe(first);
+  });
 });

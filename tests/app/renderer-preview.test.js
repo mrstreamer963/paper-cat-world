@@ -1,9 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createFixtureWorld } from "../../src/app/fixture.js";
 import { PixiWorldRenderer } from "../../src/render/pixi-world-renderer.js";
 import { applyCommand, getEntityWorldTransform } from "../../src/core/index.js";
 
 describe("renderer drag preview", () => {
+  it("builds a real render texture for a cached drawing", () => {
+    const renderTexture = { destroy: vi.fn() }, generateTexture = vi.fn(() => renderTexture), renderer = Object.create(PixiWorldRenderer.prototype);
+    renderer.app = { renderer: { textureGenerator: { generateTexture } } };
+    const drawing = { id: "art", revision: 1, strokes: [{ id: "stroke", tool: "brush", color: "#000000", width: 4, points: [{ x: -5, y: 2 }, { x: 20, y: 30 }] }] };
+
+    const cached = renderer.createDrawingTexture(drawing, .5);
+
+    expect(cached.renderTexture).toBe(renderTexture);
+    expect(cached.drawing.__renderTexture).toBe(renderTexture);
+    expect(cached.drawing.__textureFrame.x).toBeLessThan(0);
+    expect(generateTexture).toHaveBeenCalledWith(expect.objectContaining({ resolution: .5, antialias: true }));
+  });
   it("culls an offscreen host branch while preserving in-viewport entities", () => {
     const world = createFixtureWorld(), renderer = Object.create(PixiWorldRenderer.prototype);
     renderer.camera = { viewport: { width: 500, height: 400 } }; renderer.cullingMargin = 0; renderer.screenToWorld = (point) => point;

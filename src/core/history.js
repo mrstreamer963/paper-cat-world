@@ -12,6 +12,13 @@ function committed(history, world, events, commands) {
   return { ok: true, world, events, history: { ...history, world, undoStack, redoStack: [] } };
 }
 
+export function commitHistoryResult(history, result, commands) {
+  if (!result?.ok) return { ...result, world: history.world, history };
+  const list = Array.isArray(commands) ? commands : [commands];
+  if (list.length === 0) return { ok: false, world: history.world, history, error: error("UNKNOWN_COMMAND", "A non-empty command group is required") };
+  return committed(history, result.world, result.events ?? [], list);
+}
+
 export function applyHistoryCommand(history, command) {
   const result = applyWorldCommand(history.world, command);
   if (!result.ok) return { ...result, history };

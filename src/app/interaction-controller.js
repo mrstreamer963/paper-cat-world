@@ -1,9 +1,29 @@
 import { decomposeMatrix, getEntityWorldTransform, getSurfaceWorldMatrix, invertMatrix, matrixFromTransform, multiplyMatrices, pointInPolygon } from "../core/index.js";
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y), midpoint = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 const nearestOnSegment = (point, a, b) => { const dx = b.x - a.x, dy = b.y - a.y, lengthSquared = dx * dx + dy * dy, t = lengthSquared ? Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared)) : 0; return { x: a.x + dx * t, y: a.y + dy * t }; };
-function snapAnchorToSurface(world, surfaceId, worldTransform) { const surface = world.surfaces[surfaceId], surfaceMatrix = getSurfaceWorldMatrix(world, surfaceId), inverse = invertMatrix(surfaceMatrix), local = inverse && decomposeMatrix(multiplyMatrices(inverse, matrixFromTransform(worldTransform))); if (!local || pointInPolygon(local, surface.placementArea)) return worldTransform; let anchor = null, best = Infinity; for (let index = 0; index < surface.placementArea.length; index++) { const candidate = nearestOnSegment(local, surface.placementArea[index], surface.placementArea[(index + 1) % surface.placementArea.length]), d = distance(local, candidate); if (d < best) { anchor = candidate; best = d; } } return decomposeMatrix(multiplyMatrices(surfaceMatrix, matrixFromTransform({ ...local, ...anchor }))) || worldTransform; }
+function snapAnchorToSurface(world, surfaceId, worldTransform) { const surface = world.surfaces[surfaceId]; if (surface.kind !== "cat-attachments") return worldTransform; const surfaceMatrix = getSurfaceWorldMatrix(world, surfaceId), inverse = invertMatrix(surfaceMatrix), local = inverse && decomposeMatrix(multiplyMatrices(inverse, matrixFromTransform(worldTransform))); if (!local || pointInPolygon(local, surface.placementArea)) return worldTransform; let anchor = null, best = Infinity; for (let index = 0; index < surface.placementArea.length; index++) { const candidate = nearestOnSegment(local, surface.placementArea[index], surface.placementArea[(index + 1) % surface.placementArea.length]), d = distance(local, candidate); if (d < best) { anchor = candidate; best = d; } } return decomposeMatrix(multiplyMatrices(surfaceMatrix, matrixFromTransform({ ...local, ...anchor }))) || worldTransform; }
 export const canAttachToCat = (entity) => Boolean(entity && (entity.wearable || entity.item));
-export function surfaceCandidatesForDrop(world, entity, hits, candidates) { if (canAttachToCat(entity)) return candidates.filter((surface) => surface.kind !== "cat-attachments"); const top = hits[0], owned = top ? candidates.filter((surface) => surface.hostEntityId === top.id && surface.kind !== "cat-attachments") : [], parent = top && world.surfaces[top.surfaceId], ordered = parent ? [...owned, parent, ...candidates] : candidates; return ordered.filter((surface, index) => surface.kind !== "cat-attachments" && ordered.findIndex((candidate) => candidate.id === surface.id) === index); }
+function isInEntityBranch(world, entityId, ancestorId) {
+  const visited = new Set();
+  let current = world.entities[entityId];
+  while (current && !visited.has(current.id)) {
+    if (current.id === ancestorId) return true;
+    visited.add(current.id);
+    const surface = world.surfaces[current.surfaceId];
+    current = surface?.hostEntityId ? world.entities[surface.hostEntityId] : null;
+  }
+  return false;
+}
+export function surfaceCandidatesForDrop(world, entity, hits, candidates) {
+  if (canAttachToCat(entity)) return candidates.filter((surface) => surface.kind !== "cat-attachments");
+  const externalHits = hits.filter((hit) => !entity?.id || !isInEntityBranch(world, hit.id, entity.id));
+  const externalCandidates = candidates.filter((surface) => surface.kind !== "cat-attachments" && (!entity?.id || !surface.hostEntityId || !isInEntityBranch(world, surface.hostEntityId, entity.id)));
+  const top = externalHits[0];
+  const owned = top ? externalCandidates.filter((surface) => surface.hostEntityId === top.id) : [];
+  const parent = top && world.surfaces[top.surfaceId];
+  const ordered = parent ? [...owned, parent, ...externalCandidates] : externalCandidates;
+  return ordered.filter((surface, index) => ordered.findIndex((candidate) => candidate.id === surface.id) === index);
+}
 export class InteractionController {
   constructor({ canvas, renderer, store, ui, update, notify, trace = null }) { Object.assign(this, { canvas, renderer, store, ui, update, notify, trace, pointers: new Map(), mode: "idle", space: false, lastTap: null, lastTraceMoveAt: 0 }); this.bind(); }
   point(e) { const r = this.canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }

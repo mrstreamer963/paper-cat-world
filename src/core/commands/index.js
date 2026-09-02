@@ -94,7 +94,7 @@ function createEntity(world, command) {
     if (surface.localVisibility !== "visible" && surface.localVisibility !== "hidden") throw fail("INVALID_REFERENCE", "Invalid surface visibility", { value: surface.localVisibility });
     newSurfaces[surface.id] = { ...surface, transform: cloneTransform(surface.transform), placementArea: surface.placementArea.map((point) => ({ ...point })) };
   }
-  assertTarget(world, entity.id, world.surfaces[entity.surfaceId], entity.transform);
+  assertTarget(world, entity, world.surfaces[entity.surfaceId], entity.transform);
   const next = {
     ...world,
     entities: { ...world.entities, [entity.id]: { ...entity, transform: cloneTransform(entity.transform) } },
