@@ -44,4 +44,19 @@ describe("drawing editor fold guide", () => {
 
     expect(second).toBe(first);
   });
+
+  it("hit-tests rotated imported images in their exact local transform", () => {
+    const editor = Object.create(DrawingEditor.prototype);
+    const image = {
+      width: 100,
+      height: 40,
+      transform: { x: 80, y: 60, rotation: Math.PI / 2, scale: 0.5 },
+    };
+
+    expect(editor.imageContains(image, { x: 80, y: 82 })).toBe(true);
+    expect(editor.imageContains(image, { x: 105, y: 60 })).toBe(false);
+    expect(editor.imagePoint(image, { x: 50, y: 0 })).toEqual(
+      expect.objectContaining({ x: expect.closeTo(80, 8), y: expect.closeTo(85, 8) }),
+    );
+  });
 });

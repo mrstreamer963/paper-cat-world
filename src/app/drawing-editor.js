@@ -1,4 +1,5 @@
 import { getEntityWorldTransform } from "../core/index.js";
+import { importDrawingImage } from "./imported-image.js";
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const uid = (prefix) =>
@@ -6,6 +7,14 @@ const uid = (prefix) =>
 const cloneStroke = (stroke) => ({
   ...stroke,
   points: stroke.points.map((point) => ({ ...point })),
+});
+const cloneImage = (image) => ({
+  ...image,
+  transform: { ...image.transform },
+});
+const rotatePoint = (point, angle) => ({
+  x: point.x * Math.cos(angle) - point.y * Math.sin(angle),
+  y: point.x * Math.sin(angle) + point.y * Math.cos(angle),
 });
 
 export class DrawingEditor {
@@ -26,6 +35,10 @@ export class DrawingEditor {
       camera: { x: 0, y: 0, zoom: 2 },
       committedCanvas: null,
       committedKey: null,
+      selectedImageId: null,
+      imageGesture: null,
+      imagePreview: null,
+      imageCache: new Map(),
       abortController: new AbortController(),
     });
     this.canvas = document.createElement("canvas");
@@ -42,6 +55,7 @@ export class DrawingEditor {
       button.onclick = () => {
         this.tool = button.dataset.tool;
         this.sync();
+        this.render();
       };
     this.element.querySelector("[data-color]").oninput = (event) => {
       this.color = event.target.value;
@@ -49,6 +63,14 @@ export class DrawingEditor {
     this.element.querySelector("[data-size]").oninput = (event) => {
       this.size = Number(event.target.value);
     };
+    const imageInput = this.element.querySelector("[data-image-import]");
+    this.element.querySelector("[data-action=add-image]").onclick = () => {
+      imageInput.value = "";
+      imageInput.click();
+    };
+    imageInput.onchange = () => this.importImage(imageInput.files?.[0]);
+    this.element.querySelector("[data-action=delete-image]").onclick = () =>
+      this.deleteSelectedImage();
     this.element.querySelector("[data-action=undo]").onclick = () =>
       this.draft ? this.draftUndo() : this.store.undo();
     this.element.querySelector("[data-action=redo]").onclick = () =>
@@ -86,6 +108,13 @@ export class DrawingEditor {
               ? this.draftUndo()
               : this.store.undo();
         }
+        if (
+          (event.key === "Delete" || event.key === "Backspace") &&
+          this.selectedImageId
+        ) {
+          event.preventDefault();
+          this.deleteSelectedImage();
+        }
         if (event.key === "Escape") this.close();
       },
       { signal },
@@ -97,6 +126,8 @@ export class DrawingEditor {
     this.abortController.abort();
     this.resizeObserver.disconnect();
     this.unsubscribe?.();
+    for (const image of this.imageCache.values()) image.onload = image.onerror = null;
+    this.imageCache.clear();
     for (const control of this.element.querySelectorAll("button, input")) {
       control.onclick = null;
       control.oninput = null;
@@ -114,6 +145,7 @@ export class DrawingEditor {
     this.draft = null;
     this.drawingId = drawingId;
     this.entityId = entityId;
+    this.selectedImageId = null;
     this.show();
   }
   newCat() {
@@ -125,6 +157,7 @@ export class DrawingEditor {
       width,
       height,
       strokes: [],
+      images: [],
       redo: [],
       padding: 0,
     };
@@ -141,6 +174,7 @@ export class DrawingEditor {
       width: width + padding * 2,
       height: height + padding * 2,
       strokes: [],
+      images: [],
       redo: [],
       padding,
       contour: null,
@@ -155,6 +189,9 @@ export class DrawingEditor {
     this.drawingId = null;
     this.entityId = null;
     this.draft = null;
+    this.selectedImageId = null;
+    this.imageGesture = null;
+    this.imagePreview = null;
     this.onClose?.();
   }
   finish() {
@@ -175,6 +212,7 @@ export class DrawingEditor {
           height: this.draft.height,
           background: "transparent",
           strokes: this.draft.strokes.map(cloneStroke),
+          images: this.draft.images.map(cloneImage),
         },
       },
       {
@@ -250,6 +288,8 @@ export class DrawingEditor {
     }
     if (this.pointers.size === 2) {
       this.preview = null;
+      this.imageGesture = null;
+      this.imagePreview = null;
       const [a, b] = this.pointers.values();
       this.pinch = {
         mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
@@ -257,6 +297,10 @@ export class DrawingEditor {
         ...this.camera,
       };
       this.render();
+      return;
+    }
+    if (this.pointers.size === 1 && this.tool === "select") {
+      this.beginImageGesture(this.doc(point));
       return;
     }
     if (this.pointers.size === 1)
@@ -287,6 +331,10 @@ export class DrawingEditor {
       this.render();
       return;
     }
+    if (this.imageGesture) {
+      this.updateImageGesture(this.doc(point));
+      return;
+    }
     if (this.preview) {
       const next = { ...this.doc(point), pressure: this.pressure(event) };
       if (dist(next, this.preview.points.at(-1)) > 0.5)
@@ -297,6 +345,10 @@ export class DrawingEditor {
   up(event) {
     if (!this.pointers.has(event.pointerId)) return;
     this.pointers.delete(event.pointerId);
+    if (this.imageGesture) {
+      this.commitImageGesture();
+      return;
+    }
     if (!this.preview) return;
     const preview = this.preview;
     this.preview = null;
@@ -316,6 +368,190 @@ export class DrawingEditor {
     this.pointers.clear();
     this.preview = null;
     this.pinch = null;
+    this.imageGesture = null;
+    this.imagePreview = null;
+    this.render();
+  }
+  images() {
+    return this.currentDrawing()?.images ?? [];
+  }
+  displayedImage(image) {
+    return this.imagePreview?.id === image.id ? this.imagePreview : image;
+  }
+  imagePoint(image, local) {
+    const transformed = rotatePoint(
+      {
+        x: local.x * image.transform.scale,
+        y: local.y * image.transform.scale,
+      },
+      image.transform.rotation,
+    );
+    return {
+      x: image.transform.x + transformed.x,
+      y: image.transform.y + transformed.y,
+    };
+  }
+  imageHandles(image) {
+    const offset = 30 / Math.max(this.camera.zoom * image.transform.scale, 0.001);
+    return {
+      scale: this.imagePoint(image, { x: image.width / 2, y: image.height / 2 }),
+      rotate: this.imagePoint(image, { x: 0, y: -image.height / 2 - offset }),
+    };
+  }
+  imageContains(image, point) {
+    const dx = point.x - image.transform.x,
+      dy = point.y - image.transform.y,
+      local = rotatePoint({ x: dx, y: dy }, -image.transform.rotation),
+      scale = image.transform.scale;
+    return (
+      Math.abs(local.x) <= (image.width * scale) / 2 &&
+      Math.abs(local.y) <= (image.height * scale) / 2
+    );
+  }
+  beginImageGesture(point) {
+    const radius = 14 / this.camera.zoom,
+      selected = this.images().find((image) => image.id === this.selectedImageId);
+    let image = selected,
+      mode = null;
+    if (selected) {
+      const handles = this.imageHandles(selected);
+      if (dist(point, handles.rotate) <= radius) mode = "rotate";
+      else if (dist(point, handles.scale) <= radius) mode = "scale";
+    }
+    if (!mode) {
+      image = [...this.images()].reverse().find((item) => this.imageContains(item, point));
+      if (image) mode = "move";
+    }
+    this.selectedImageId = image?.id ?? null;
+    if (!image) {
+      this.sync();
+      this.render();
+      return;
+    }
+    this.imagePreview = cloneImage(image);
+    this.imageGesture = {
+      mode,
+      start: point,
+      original: { ...image.transform },
+      startDistance: Math.max(
+        0.001,
+        dist(point, { x: image.transform.x, y: image.transform.y }),
+      ),
+      startAngle: Math.atan2(
+        point.y - image.transform.y,
+        point.x - image.transform.x,
+      ),
+    };
+    this.sync();
+    this.render();
+  }
+  updateImageGesture(point) {
+    const gesture = this.imageGesture,
+      image = this.imagePreview;
+    if (!gesture || !image) return;
+    if (gesture.mode === "move") {
+      image.transform.x = gesture.original.x + point.x - gesture.start.x;
+      image.transform.y = gesture.original.y + point.y - gesture.start.y;
+    } else if (gesture.mode === "scale") {
+      const distance = dist(point, {
+        x: gesture.original.x,
+        y: gesture.original.y,
+      });
+      image.transform.scale = Math.max(
+        0.01,
+        Math.min(100, gesture.original.scale * (distance / gesture.startDistance)),
+      );
+    } else if (gesture.mode === "rotate") {
+      const angle = Math.atan2(
+        point.y - gesture.original.y,
+        point.x - gesture.original.x,
+      );
+      image.transform.rotation = gesture.original.rotation + angle - gesture.startAngle;
+    }
+    this.render();
+  }
+  commitImageGesture() {
+    const image = this.imagePreview,
+      original = this.imageGesture?.original;
+    this.imageGesture = null;
+    this.imagePreview = null;
+    if (!image || !original) return this.render();
+    const changed = ["x", "y", "rotation", "scale"].some(
+      (field) => image.transform[field] !== original[field],
+    );
+    if (changed && this.draft) {
+      this.draft.images = this.draft.images.map((item) =>
+        item.id === image.id ? cloneImage(image) : item,
+      );
+      this.draft.redo = [];
+    } else if (changed) {
+      const result = this.store.dispatch({
+        type: "updateDrawingImage",
+        drawingId: this.drawingId,
+        imageId: image.id,
+        transform: image.transform,
+      });
+      if (!result.ok) this.notify(result.error.code);
+    }
+    this.render();
+  }
+  async importImage(file) {
+    if (!file) return;
+    try {
+      const imported = await importDrawingImage(file),
+        drawing = this.currentDrawing(),
+        image = {
+          id: uid("image"),
+          ...imported,
+          transform: {
+            x: drawing.width / 2,
+            y: drawing.height / 2,
+            rotation: 0,
+            scale: Math.max(
+              0.01,
+              Math.min(
+                1,
+                (drawing.width * 0.7) / imported.width,
+                (drawing.height * 0.7) / imported.height,
+              ),
+            ),
+          },
+        };
+      if (this.draft) {
+        this.draft.images.push(cloneImage(image));
+        this.draft.redo = [];
+      } else {
+        const result = this.store.dispatch({
+          type: "addDrawingImage",
+          drawingId: this.drawingId,
+          image,
+        });
+        if (!result.ok) return this.notify(result.error.code);
+      }
+      this.selectedImageId = image.id;
+      this.tool = "select";
+      this.sync();
+      this.render();
+    } catch (error) {
+      this.notify(error.code ?? "IMAGE_READ_FAILED");
+    }
+  }
+  deleteSelectedImage() {
+    const imageId = this.selectedImageId;
+    if (!imageId) return;
+    if (this.draft) {
+      this.draft.images = this.draft.images.filter((image) => image.id !== imageId);
+      this.draft.redo = [];
+    } else {
+      const result = this.store.dispatch({
+        type: "removeDrawingImage",
+        drawingId: this.drawingId,
+        imageId,
+      });
+      if (!result.ok) return this.notify(result.error.code);
+    }
+    this.selectedImageId = null;
+    this.sync();
     this.render();
   }
   draftUndo() {
@@ -367,6 +603,7 @@ export class DrawingEditor {
           height: this.draft.height,
           background: "transparent",
           strokes: this.draft.strokes.map(cloneStroke),
+          images: this.draft.images.map(cloneImage),
         },
       },
       {
@@ -391,12 +628,101 @@ export class DrawingEditor {
       button.classList.toggle("active", button.dataset.tool === this.tool);
     this.element.querySelector("[data-tool=scissors]").hidden =
       this.draft?.kind === "cat";
+    this.element.querySelector("[data-action=delete-image]").hidden =
+      !this.selectedImageId;
     this.element.querySelector("[data-action=done]").textContent =
       this.draft?.kind === "cat"
         ? "Создать кота"
         : this.draft?.kind === "wearable"
           ? "Обведите ножницами"
           : "Готово";
+  }
+  cachedImage(source) {
+    let image = this.imageCache.get(source);
+    if (!image) {
+      image = new Image();
+      image.onload = () => this.render();
+      image.onerror = () => this.notify("IMAGE_READ_FAILED");
+      image.src = source;
+      this.imageCache.set(source, image);
+    }
+    return image;
+  }
+  drawImages(drawing) {
+    const context = this.ctx;
+    context.save();
+    context.beginPath();
+    context.rect(
+      this.camera.x,
+      this.camera.y,
+      drawing.width * this.camera.zoom,
+      drawing.height * this.camera.zoom,
+    );
+    context.clip();
+    for (const stored of drawing.images ?? []) {
+      const item = this.displayedImage(stored),
+        image = this.cachedImage(item.source);
+      if (!image.complete || image.naturalWidth === 0) continue;
+      context.save();
+      context.translate(
+        this.camera.x + item.transform.x * this.camera.zoom,
+        this.camera.y + item.transform.y * this.camera.zoom,
+      );
+      context.rotate(item.transform.rotation);
+      context.scale(
+        item.transform.scale * this.camera.zoom,
+        item.transform.scale * this.camera.zoom,
+      );
+      context.drawImage(image, -item.width / 2, -item.height / 2, item.width, item.height);
+      context.restore();
+    }
+    context.restore();
+  }
+  drawImageSelection() {
+    const stored = this.images().find((image) => image.id === this.selectedImageId);
+    if (!stored || this.tool !== "select") return;
+    const image = this.displayedImage(stored),
+      context = this.ctx,
+      corners = [
+        { x: -image.width / 2, y: -image.height / 2 },
+        { x: image.width / 2, y: -image.height / 2 },
+        { x: image.width / 2, y: image.height / 2 },
+        { x: -image.width / 2, y: image.height / 2 },
+      ].map((point) => this.imagePoint(image, point)),
+      handles = this.imageHandles(image),
+      screen = (point) => ({
+        x: this.camera.x + point.x * this.camera.zoom,
+        y: this.camera.y + point.y * this.camera.zoom,
+      }),
+      scaleHandle = screen(handles.scale),
+      rotateHandle = screen(handles.rotate),
+      top = screen(this.imagePoint(image, { x: 0, y: -image.height / 2 }));
+    context.save();
+    context.beginPath();
+    const first = screen(corners[0]);
+    context.moveTo(first.x, first.y);
+    for (const corner of corners.slice(1)) {
+      const point = screen(corner);
+      context.lineTo(point.x, point.y);
+    }
+    context.closePath();
+    context.strokeStyle = "#493b91";
+    context.lineWidth = 2;
+    context.setLineDash([6, 4]);
+    context.stroke();
+    context.setLineDash([]);
+    context.beginPath();
+    context.moveTo(top.x, top.y);
+    context.lineTo(rotateHandle.x, rotateHandle.y);
+    context.stroke();
+    for (const handle of [scaleHandle, rotateHandle]) {
+      context.beginPath();
+      context.arc(handle.x, handle.y, 8, 0, Math.PI * 2);
+      context.fillStyle = "#fff";
+      context.fill();
+      context.stroke();
+    }
+    context.restore();
   }
   line(stroke) {
     const context = this.ctx,
@@ -550,6 +876,7 @@ export class DrawingEditor {
       this.committedKey = key;
     }
     context.drawImage(this.committedCanvas, 0, 0, rect.width, rect.height);
+    this.drawImages(drawing);
     if (this.preview) {
       context.save();
       context.beginPath();
@@ -563,5 +890,6 @@ export class DrawingEditor {
       this.line(this.preview);
       context.restore();
     }
+    this.drawImageSelection();
   }
 }

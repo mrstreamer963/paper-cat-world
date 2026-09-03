@@ -1,4 +1,12 @@
-import { Application, Container, Graphics, Text, WebGLRenderer } from "pixi.js";
+import {
+  Application,
+  Assets,
+  Container,
+  Graphics,
+  Sprite,
+  Text,
+  WebGLRenderer,
+} from "pixi.js";
 import {
   transformPoint,
   invertMatrix,
@@ -43,6 +51,9 @@ export class PixiWorldRenderer {
     this.transitions = new Map();
     this.blockedNextActions = new Set();
     this.snapFrame = null;
+    this.importedTextures = new Map();
+    this.imageGeneration = 0;
+    this.destroyed = false;
     this.cullingMargin = cullingMargin;
     this.stats = {
       displayObjects: 0,
@@ -68,8 +79,12 @@ export class PixiWorldRenderer {
     return this.transitions.has(entityId);
   }
   destroy() {
+    this.destroyed = true;
     if (this.snapFrame !== null) cancelAnimationFrame(this.snapFrame);
     this.drawingCache.clear();
+    for (const entry of this.importedTextures.values())
+      entry.texture?.destroy?.(true);
+    this.importedTextures.clear();
     this.objects.clear();
     this.app.destroy(true, { children: true });
   }
@@ -357,6 +372,7 @@ export class PixiWorldRenderer {
     const container = new Container(),
       body = new Graphics(),
       art = new Graphics(),
+      imageArt = new Container(),
       mask = new Graphics(),
       label = new Text({
         text: entity.label || entity.id,
@@ -368,8 +384,17 @@ export class PixiWorldRenderer {
         },
       });
     label.position.set(14, 13);
-    container.addChild(body, art, mask, label);
-    return { container, body, art, mask, label, artKey: null };
+    container.addChild(body, art, imageArt, mask, label);
+    return {
+      container,
+      body,
+      art,
+      imageArt,
+      mask,
+      label,
+      artKey: null,
+      imageKey: null,
+    };
   }
   drawStroke(graphics, stroke) {
     const color = stroke.tool === "eraser" ? 0xffffff : stroke.color,
@@ -447,6 +472,41 @@ export class PixiWorldRenderer {
     };
     chunk(0);
   }
+  drawDrawingImages(container, drawing) {
+    for (const child of container.removeChildren()) child.destroy();
+    for (const image of drawing?.images ?? []) {
+      const texture = this.importedImageTexture(image.source);
+      if (!texture) continue;
+      const sprite = new Sprite(texture);
+      sprite.anchor.set(0.5);
+      sprite.position.set(image.transform.x, image.transform.y);
+      sprite.rotation = image.transform.rotation;
+      sprite.width = image.width * image.transform.scale;
+      sprite.height = image.height * image.transform.scale;
+      container.addChild(sprite);
+    }
+  }
+  importedImageTexture(source) {
+    let entry = this.importedTextures.get(source);
+    if (!entry) {
+      entry = { texture: null };
+      this.importedTextures.set(source, entry);
+      Assets.load(source)
+        .then((texture) => {
+          if (this.destroyed) {
+            texture.destroy?.(true);
+            return;
+          }
+          entry.texture = texture;
+          this.imageGeneration += 1;
+          if (this.world && this.lastUi) this.render(this.world, this.lastUi);
+        })
+        .catch(() => {
+          entry.failed = true;
+        });
+    }
+    return entry.texture;
+  }
   renderFrame(world, ui) {
     const frameStarted = performance.now();
     this.world = world;
@@ -485,6 +545,11 @@ export class PixiWorldRenderer {
         this.drawDrawing(d.art, cached?.drawing);
         d.artKey = artKey;
       }
+      const imageKey = `${artKey}:${this.imageGeneration}`;
+      if (d.imageKey !== imageKey) {
+        this.drawDrawingImages(d.imageArt, drawing);
+        d.imageKey = imageKey;
+      }
       if (e.kind === "cutout") {
         d.body
           .poly(e.contour.flatMap((p) => [p.x, p.y]))
@@ -495,6 +560,7 @@ export class PixiWorldRenderer {
           });
         d.mask.poly(e.contour.flatMap((p) => [p.x, p.y])).fill(0xffffff);
         d.art.mask = d.mask;
+        d.imageArt.mask = d.mask;
       } else if (e.kind === "cat") {
         const silhouette = world.rules.templates[e.templateId].silhouette;
         d.body
@@ -506,11 +572,13 @@ export class PixiWorldRenderer {
           });
         d.mask.poly(silhouette.flatMap((p) => [p.x, p.y])).fill(0xffffff);
         d.art.mask = d.mask;
+        d.imageArt.mask = d.mask;
       } else {
         const closedSheet = e.kind === "sheet" && e.state === "closed",
           displayLeft = closedSheet ? e.width / 2 : 0,
           displayWidth = closedSheet ? e.width / 2 : e.width;
         d.art.position.x = displayLeft;
+        d.imageArt.position.x = displayLeft;
         d.label.position.x = displayLeft + 14;
         d.body
           .roundRect(displayLeft, 0, displayWidth, e.height, 7)
@@ -530,6 +598,7 @@ export class PixiWorldRenderer {
           .roundRect(displayLeft, 0, displayWidth, e.height, 7)
           .fill(0xffffff);
         d.art.mask = d.mask;
+        d.imageArt.mask = d.mask;
         if ((e.kind === "sheet" || e.kind === "notebook") && e.state === "open")
           d.body
             .moveTo(e.width / 2, 0)

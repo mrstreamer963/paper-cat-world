@@ -37,6 +37,9 @@ const COMMANDS = new Set([
   "deleteDrawing",
   "addStroke",
   "removeStroke",
+  "addDrawingImage",
+  "updateDrawingImage",
+  "removeDrawingImage",
   "createCutout",
   "createCat",
   "createWearableCutout",
@@ -920,6 +923,12 @@ function cloneStroke(stroke) {
     })),
   };
 }
+function cloneDrawingImage(image) {
+  return {
+    ...image,
+    transform: cloneTransform(image.transform),
+  };
+}
 function assertDrawing(drawing) {
   assertId(drawing?.id, "drawingId");
   if (
@@ -931,6 +940,8 @@ function assertDrawing(drawing) {
     throw fail("INVALID_NUMBER", "Drawing dimensions must be positive");
   if (!Array.isArray(drawing.strokes))
     throw fail("INVALID_STROKE", "strokes must be an array");
+  if (drawing.images !== undefined && !Array.isArray(drawing.images))
+    throw fail("INVALID_DRAWING_IMAGE", "images must be an array");
 }
 function assertStroke(stroke) {
   if (
@@ -953,6 +964,27 @@ function assertStroke(stroke) {
   )
     throw fail("INVALID_STROKE", "Stroke is invalid");
 }
+function assertDrawingImage(world, image) {
+  if (
+    !image ||
+    typeof image !== "object" ||
+    typeof image.id !== "string" ||
+    !image.id ||
+    typeof image.source !== "string" ||
+    image.source.length > 4_000_000 ||
+    !/^data:image\/(?:png|svg\+xml);base64,[a-z0-9+/]+={0,2}$/i.test(
+      image.source,
+    ) ||
+    !Number.isFinite(image.width) ||
+    image.width <= 0 ||
+    image.width > 8192 ||
+    !Number.isFinite(image.height) ||
+    image.height <= 0 ||
+    image.height > 8192
+  )
+    throw fail("INVALID_DRAWING_IMAGE", "Drawing image is invalid");
+  assertTransform(world, image.transform);
+}
 function createDrawing(world, command) {
   const input = command.drawing ?? command;
   assertDrawing(input);
@@ -968,12 +1000,19 @@ function createDrawing(world, command) {
   });
   if (new Set(strokes.map((s) => s.id)).size !== strokes.length)
     throw fail("INVALID_STROKE", "Stroke IDs must be unique");
+  const images = (input.images ?? []).map((image) => {
+    assertDrawingImage(world, image);
+    return cloneDrawingImage(image);
+  });
+  if (new Set(images.map((image) => image.id)).size !== images.length)
+    throw fail("INVALID_DRAWING_IMAGE", "Drawing image IDs must be unique");
   const drawing = {
     id: input.id,
     width: input.width,
     height: input.height,
     background: input.background ?? "transparent",
     strokes,
+    images,
     revision: input.revision ?? 0,
   };
   return {
@@ -983,6 +1022,46 @@ function createDrawing(world, command) {
         type: "drawingChanged",
         drawingId: drawing.id,
         revision: drawing.revision,
+      },
+    ],
+  };
+}
+function changeDrawingImage(world, command, operation) {
+  const drawing = world.drawings[command.drawingId];
+  if (!drawing) throw fail("DRAWING_NOT_FOUND", "Drawing was not found");
+  const images = drawing.images ?? [];
+  let nextImages;
+  if (operation === "add") {
+    assertDrawingImage(world, command.image);
+    if (images.some((image) => image.id === command.image.id))
+      throw fail("DUPLICATE_ID", "Drawing image ID already exists");
+    nextImages = [...images, cloneDrawingImage(command.image)];
+  } else {
+    const index = images.findIndex((image) => image.id === command.imageId);
+    if (index < 0)
+      throw fail("DRAWING_IMAGE_NOT_FOUND", "Drawing image was not found");
+    if (operation === "remove")
+      nextImages = images.filter((_, imageIndex) => imageIndex !== index);
+    else {
+      const image = { ...images[index], transform: command.transform };
+      assertDrawingImage(world, image);
+      nextImages = images.map((item, imageIndex) =>
+        imageIndex === index ? cloneDrawingImage(image) : item,
+      );
+    }
+  }
+  const next = {
+    ...drawing,
+    images: nextImages,
+    revision: drawing.revision + 1,
+  };
+  return {
+    world: { ...world, drawings: { ...world.drawings, [drawing.id]: next } },
+    events: [
+      {
+        type: "drawingChanged",
+        drawingId: drawing.id,
+        revision: next.revision,
       },
     ],
   };
@@ -1101,12 +1180,21 @@ function createCutout(world, command) {
         y: p.y - anchor.y,
       })),
     }));
+  const images = (source.images ?? []).map((image) => ({
+    ...cloneDrawingImage(image),
+    transform: {
+      ...image.transform,
+      x: image.transform.x - anchor.x,
+      y: image.transform.y - anchor.y,
+    },
+  }));
   const drawing = {
     id: drawingId,
     width: box.maxX - box.minX,
     height: box.maxY - box.minY,
     background: "transparent",
     strokes,
+    images,
     revision: 0,
   };
   const position = command.worldPosition ?? command.position ?? anchor;
@@ -1148,6 +1236,12 @@ function execute(world, command) {
   if (command.type === "addStroke") return changeStroke(world, command);
   if (command.type === "removeStroke")
     return changeStroke(world, command, true);
+  if (command.type === "addDrawingImage")
+    return changeDrawingImage(world, command, "add");
+  if (command.type === "updateDrawingImage")
+    return changeDrawingImage(world, command, "update");
+  if (command.type === "removeDrawingImage")
+    return changeDrawingImage(world, command, "remove");
   if (command.type === "deleteEntity") return deleteEntity(world, command);
   if (command.type === "createCutout") return createCutout(world, command);
   if (command.type === "createCat") return createCat(world, command);

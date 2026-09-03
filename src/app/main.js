@@ -12,10 +12,11 @@ import {
 import { loadCatTemplates } from "./cat-template-loader.js";
 import { AutosaveService } from "./autosave.js";
 import { DrawingEditor } from "./drawing-editor.js";
+import { sanitizeWorldDrawingImages } from "./imported-image.js";
 import { TraceRecorder } from "./trace-recorder.js";
 const root = document.querySelector("#app");
 const appAbortController = new AbortController();
-root.innerHTML = `<main><section class="stage" aria-label="Бумажный стол"></section><header><div><strong>Бумажный мир</strong><span> двигайте детали и камеру</span></div><div class="create-actions"><button data-action="new-world">Начать новый мир</button><button data-action="new-cat">Новый кот</button><button data-action="new-wearable">Новая одежда</button><button data-action="new-sheet">Новый лист</button><button data-action="new-notebook">Новая тетрадь</button><button data-action="fit">Показать весь стол</button><button data-action="export">Сохранить</button><button data-action="import">Загрузить</button><button data-action="trace" title="Скачать диагностический трейс">Скачать трейс</button><input data-import type="file" accept="application/json,.json" hidden></div></header><aside hidden><b data-label></b><button data-action="draw">Рисовать</button><button data-action="sheet-inside">Внутри</button><button data-action="sheet-top">Сверху</button><button data-action="sheet-bottom">Снизу</button><button data-action="toggle">Открыть</button><button data-action="previous">← Комната</button><button data-action="next">Комната →</button><button data-action="detach">Снять</button><button data-action="left" aria-label="Повернуть против часовой стрелки">↶</button><button data-action="right" aria-label="Повернуть по часовой стрелке">↷</button><button data-action="delete">Удалить</button><button data-action="clear">Снять выбор</button></aside><div class="editor" hidden><nav aria-label="Инструменты рисования"><button data-tool="brush" class="active">Кисть</button><button data-tool="eraser">Ластик</button><button data-tool="scissors">✂ Контур</button><label>Цвет <input data-color type="color" value="#3a312e"></label><label>Размер <input data-size type="range" min="2" max="32" value="8"></label><button data-action="undo" aria-label="Отменить">↶</button><button data-action="redo">Повторить</button><button data-action="done">Готово</button><button data-action="close">Отмена</button></nav></div><div class="toast" role="status"></div></main>`;
+root.innerHTML = `<main><section class="stage" aria-label="Бумажный стол"></section><header><div><strong>Бумажный мир</strong><span> двигайте детали и камеру</span></div><div class="create-actions"><button data-action="new-world">Начать новый мир</button><button data-action="new-cat">Новый кот</button><button data-action="new-wearable">Новая одежда</button><button data-action="new-sheet">Новый лист</button><button data-action="new-notebook">Новая тетрадь</button><button data-action="fit">Показать весь стол</button><button data-action="export">Сохранить</button><button data-action="import">Загрузить</button><button data-action="trace" title="Скачать диагностический трейс">Скачать трейс</button><input data-import type="file" accept="application/json,.json" hidden></div></header><aside hidden><b data-label></b><button data-action="draw">Рисовать</button><button data-action="sheet-inside">Внутри</button><button data-action="sheet-top">Сверху</button><button data-action="sheet-bottom">Снизу</button><button data-action="toggle">Открыть</button><button data-action="previous">← Комната</button><button data-action="next">Комната →</button><button data-action="detach">Снять</button><button data-action="left" aria-label="Повернуть против часовой стрелки">↶</button><button data-action="right" aria-label="Повернуть по часовой стрелке">↷</button><button data-action="delete">Удалить</button><button data-action="clear">Снять выбор</button></aside><div class="editor" hidden><nav aria-label="Инструменты рисования"><button data-tool="brush" class="active">Кисть</button><button data-tool="eraser">Ластик</button><button data-tool="select">Выбор</button><button data-action="add-image">+ SVG/PNG</button><input data-image-import type="file" accept="image/svg+xml,image/png,.svg,.png" hidden><button data-action="delete-image" hidden>Удалить картинку</button><button data-tool="scissors">✂ Контур</button><label>Цвет <input data-color type="color" value="#3a312e"></label><label>Размер <input data-size type="range" min="2" max="32" value="8"></label><button data-action="undo" aria-label="Отменить">↶</button><button data-action="redo">Повторить</button><button data-action="done">Готово</button><button data-action="close">Отмена</button></nav></div><div class="toast" role="status"></div></main>`;
 if (import.meta.env.DEV)
   root
     .querySelector("main")
@@ -139,6 +140,10 @@ const messages = {
   UNSUPPORTED_SCHEMA_VERSION: "Сохранение создано более новой версией",
   FILE_TOO_LARGE: "Файл слишком большой",
   FILE_READ_FAILED: "Не удалось прочитать файл",
+  IMAGE_READ_FAILED: "Не удалось прочитать изображение",
+  INVALID_DRAWING_IMAGE: "Изображение повреждено или слишком большое",
+  DRAWING_IMAGE_NOT_FOUND: "Изображение уже удалено",
+  UNSUPPORTED_IMAGE_FORMAT: "Поддерживаются только SVG и PNG",
   STORAGE_UNAVAILABLE: "Автосохранение недоступно",
   STORAGE_QUOTA_EXCEEDED: "Для автосохранения не хватает места",
   ENTITY_NOT_EMPTY: "Сначала уберите содержимое объекта",
@@ -344,6 +349,15 @@ root.querySelector("[data-action=import]").onclick = () => {
 const exceedsImportBudget = (world) =>
   Object.keys(world.entities).length > 5000 ||
   Object.values(world.drawings).reduce(
+    (sum, drawing) =>
+      sum +
+      (drawing.images ?? []).reduce(
+        (imageSum, image) => imageSum + image.source.length,
+        0,
+      ),
+    0,
+  ) > 20_000_000 ||
+  Object.values(world.drawings).reduce(
     (sum, drawing) => sum + drawing.strokes.length,
     0,
   ) > 20000 ||
@@ -368,11 +382,17 @@ importInput.onchange = async () => {
   }
   const loaded = loadWorld(text, { templates });
   if (!loaded.ok) return notify(loaded.error.code);
-  if (exceedsImportBudget(loaded.world)) return notify("FILE_TOO_LARGE");
+  let importedWorld;
+  try {
+    importedWorld = sanitizeWorldDrawingImages(loaded.world);
+  } catch {
+    return notify("INVALID_SAVE");
+  }
+  if (exceedsImportBudget(importedWorld)) return notify("FILE_TOO_LARGE");
   ui.selectedEntityId = null;
   ui.dragPreview = null;
-  store.replace(loaded.world, [{ type: "worldImported" }]);
-  renderer.camera.fit(loaded.world.table.width, loaded.world.table.height);
+  store.replace(importedWorld, [{ type: "worldImported" }]);
+  renderer.camera.fit(importedWorld.table.width, importedWorld.table.height);
 };
 root.querySelector("[data-action=clear]").onclick = () => {
   ui.selectedEntityId = null;
@@ -433,9 +453,14 @@ const saved = autosave.read();
 if (saved !== null) {
   const loaded = loadWorld(saved, { templates });
   if (loaded.ok) {
-    ui.selectedEntityId = null;
-    store.replace(loaded.world, [{ type: "worldRestored" }]);
-    renderer.camera.fit(loaded.world.table.width, loaded.world.table.height);
+    try {
+      const restoredWorld = sanitizeWorldDrawingImages(loaded.world);
+      ui.selectedEntityId = null;
+      store.replace(restoredWorld, [{ type: "worldRestored" }]);
+      renderer.camera.fit(restoredWorld.table.width, restoredWorld.table.height);
+    } catch {
+      notify("INVALID_SAVE");
+    }
   } else notify(loaded.error.code);
 }
 if (import.meta.hot)
