@@ -139,12 +139,9 @@ function assertTarget(world, entity, targetSurface, transform) {
 }
 
 function nextZIndex(world, surfaceId) {
-  const siblings = Object.values(world.entities)
-    .filter((entity) => entity.surfaceId === surfaceId)
-    .sort(
-      (left, right) =>
-        left.zIndex - right.zIndex || left.id.localeCompare(right.id),
-    );
+  const siblings = Object.values(world.entities).filter(
+    (entity) => entity.surfaceId === surfaceId,
+  );
   return siblings.length === 0
     ? 0
     : Math.max(...siblings.map((entity) => entity.zIndex)) + 1;

@@ -243,7 +243,11 @@ export class DrawingEditor {
   down(event) {
     const point = this.screen(event);
     this.pointers.set(event.pointerId, point);
-    this.canvas.setPointerCapture(event.pointerId);
+    try {
+      this.canvas.setPointerCapture(event.pointerId);
+    } catch {
+      /* Capture may be denied or revoked by WebKit/system gestures. */
+    }
     if (this.pointers.size === 2) {
       this.preview = null;
       const [a, b] = this.pointers.values();

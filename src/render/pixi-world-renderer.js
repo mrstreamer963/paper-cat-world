@@ -5,14 +5,13 @@ import {
   matrixFromTransform,
   multiplyMatrices,
   decomposeMatrix,
-} from "../core/geometry/matrix.js";
-import {
   getEntityWorldTransform,
   getSurfaceWorldMatrix,
   isEntityVisible,
   isSurfaceVisible,
   isSurfaceLocallyVisible,
   pointInPolygon,
+  pointsAabb,
 } from "../core/index.js";
 import { Camera } from "./camera.js";
 import { DrawingTextureCache } from "./drawing-texture-cache.js";
@@ -211,13 +210,7 @@ export class PixiWorldRenderer {
         { x: left, y: entity.height },
       ];
     }
-    const transformed = points.map((point) => transformPoint(matrix, point));
-    return {
-      minX: Math.min(...transformed.map((p) => p.x)),
-      minY: Math.min(...transformed.map((p) => p.y)),
-      maxX: Math.max(...transformed.map((p) => p.x)),
-      maxY: Math.max(...transformed.map((p) => p.y)),
-    };
+    return pointsAabb(points.map((point) => transformPoint(matrix, point)));
   }
   isAabbVisible(aabb, viewport = this.viewportWorldBounds()) {
     return (
@@ -566,7 +559,8 @@ export class PixiWorldRenderer {
         }
       }
     this.stats = {
-      displayObjects: this.objects.size + 2,
+      displayObjects:
+        this.objects.size + [this.root, this.table].filter(Boolean).length,
       textureCacheSize: this.drawingCache.size,
       cacheRebuilds: this.drawingCache.rebuilds,
       frameTime: performance.now() - frameStarted,

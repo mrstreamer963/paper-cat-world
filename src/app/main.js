@@ -309,31 +309,32 @@ root.querySelector("[data-action=fit]").onclick = () => {
   renderer.camera.fit(store.world.table.width, store.world.table.height);
   update();
 };
+function downloadJson(value, filename) {
+  const json = `${JSON.stringify(value, null, 2)}\n`;
+  const url = URL.createObjectURL(
+    new Blob([json], { type: "application/json;charset=utf-8" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 root.querySelector("[data-action=export]").onclick = () => {
   try {
-    const json = `${JSON.stringify(serializeWorld(store.world), null, 2)}\n`,
-      url = URL.createObjectURL(
-        new Blob([json], { type: "application/json;charset=utf-8" }),
-      ),
-      link = document.createElement("a");
-    link.href = url;
-    link.download = `paper-cat-world-${new Date().toISOString().slice(0, 10)}.json`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+    downloadJson(
+      serializeWorld(store.world),
+      `paper-cat-world-${new Date().toISOString().slice(0, 10)}.json`,
+    );
   } catch (error) {
     notify(error.code);
   }
 };
 root.querySelector("[data-action=trace]").onclick = () => {
-  const json = `${JSON.stringify(trace.export(serializeWorld(store.world)), null, 2)}\n`,
-    url = URL.createObjectURL(
-      new Blob([json], { type: "application/json;charset=utf-8" }),
-    ),
-    link = document.createElement("a");
-  link.href = url;
-  link.download = `paper-cat-world-trace-${new Date().toISOString().replaceAll(":", "-").slice(0, 19)}.json`;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  downloadJson(
+    trace.export(serializeWorld(store.world)),
+    `paper-cat-world-trace-${new Date().toISOString().replaceAll(":", "-").slice(0, 19)}.json`,
+  );
 };
 const importInput = root.querySelector("[data-import]");
 root.querySelector("[data-action=import]").onclick = () => {
