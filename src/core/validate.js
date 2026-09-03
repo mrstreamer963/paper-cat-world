@@ -72,6 +72,14 @@ export function validateWorldState(world) {
       if (!stroke || !validId(stroke.id) || strokeIds.has(stroke.id) || !["brush", "eraser"].includes(stroke.tool) || !Number.isFinite(stroke.width) || stroke.width <= 0 || !Array.isArray(stroke.points) || stroke.points.length < 1 || stroke.points.some((p) => !isFinitePoint(p) || !Number.isFinite(p.pressure) || p.pressure < 0 || p.pressure > 1)) add(errors, "INVALID_STROKE", `${path}.strokes.${i}`);
       strokeIds.add(stroke?.id);
     }
+    const imageIds = new Set();
+    if (drawing.images !== undefined && !Array.isArray(drawing.images)) add(errors, "INVALID_DRAWING_IMAGE", `${path}.images`);
+    for (const [i, image] of (drawing.images ?? []).entries()) {
+      const imagePath = `${path}.images.${i}`;
+      if (!image || !validId(image.id) || imageIds.has(image.id) || typeof image.source !== "string" || image.source.length > 4_000_000 || !/^data:image\/(?:png|svg\+xml);base64,[a-z0-9+/]+={0,2}$/i.test(image.source) || !Number.isFinite(image.width) || image.width <= 0 || image.width > 8192 || !Number.isFinite(image.height) || image.height <= 0 || image.height > 8192) add(errors, "INVALID_DRAWING_IMAGE", imagePath);
+      else validateTransform(image.transform, rules, `${imagePath}.transform`, errors);
+      imageIds.add(image?.id);
+    }
   }
 
   const globalIds = new Set();
