@@ -1,6 +1,105 @@
-import { describe, expect, it, vi } from "vitest"; import { createWorld } from "../../src/core/index.js"; import { WorldStore } from "../../src/app/world-store.js";
-describe("WorldStore", () => { it("publishes a successful command once and ignores a rejection", () => { const store = new WorldStore(createWorld({ width: 100, height: 100 })), listener = vi.fn(); store.subscribe(listener); const entity = { id: "paper", kind: "paper", width: 10, height: 10, surfaceId: "table", transform: { x: 10, y: 10, rotation: 0, scale: 1 }, zIndex: 0 }; expect(store.dispatch({ type: "createEntity", entity }).ok).toBe(true); const accepted = store.world; expect(listener).toHaveBeenCalledTimes(1); expect(store.dispatch({ type: "moveEntity", entityId: "paper", targetSurfaceId: "table", transform: { x: 200, y: 10, rotation: 0, scale: 1 } }).ok).toBe(false); expect(store.world).toBe(accepted); expect(listener).toHaveBeenCalledTimes(1); }); });
-it("commits a successful trial without applying the command again", () => { const store = new WorldStore(createWorld({ width: 100, height: 100 })), command = { type: "createEntity", entity: { id: "paper", kind: "paper", width: 10, height: 10, surfaceId: "table", transform: { x: 10, y: 10, rotation: 0, scale: 1 }, zIndex: 0 } }; const trial = store.try(command), committed = store.dispatch(command); expect(committed.ok).toBe(true); expect(committed.world).toBe(trial.world); expect(store.history.undoStack).toHaveLength(1); expect(store.undo().world.entities.paper).toBeUndefined(); });
-it("does not reuse a trial after its command is mutated", () => { const store = new WorldStore(createWorld({ width: 100, height: 100 })), command = { type: "createEntity", entity: { id: "paper", kind: "paper", surfaceId: "table", transform: { x: 10, y: 10, rotation: 0, scale: 1 }, zIndex: 0 } }; const trial = store.try(command); command.entity.transform.x = 25; const committed = store.dispatch(command); expect(committed.world).not.toBe(trial.world); expect(committed.world.entities.paper.transform.x).toBe(25); });
-it("commits a successful group trial with its events and one history entry", () => { const store = new WorldStore(createWorld({ width: 100, height: 100 })), events = [], commands = [{ type: "createEntity", entity: { id: "a", kind: "paper", surfaceId: "table", transform: { x: 10, y: 10, rotation: 0, scale: 1 }, zIndex: 0 } }, { type: "bringEntityToFront", entityId: "a" }]; store.subscribe((change) => events.push(...change.events)); const trial = store.tryGroup(commands), committed = store.dispatchGroup(commands); expect(committed.world).toBe(trial.world); expect(events.map((event) => event.type)).toEqual(["entityCreated", "entityBroughtToFront"]); expect(store.history.undoStack).toHaveLength(1); });
-it("atomically replaces the world with empty history", () => { const store = new WorldStore(createWorld()), next = createWorld({ width: 50, height: 60 }); store.replace(next); expect(store.world).toBe(next); expect(store.history.undoStack).toEqual([]); expect(store.undo().ok).toBe(false); });
+import { describe, expect, it, vi } from "vitest";
+import { createWorld } from "../../src/core/index.js";
+import { WorldStore } from "../../src/app/world-store.js";
+describe("WorldStore", () => {
+  it("publishes a successful command once and ignores a rejection", () => {
+    const store = new WorldStore(createWorld({ width: 100, height: 100 })),
+      listener = vi.fn();
+    store.subscribe(listener);
+    const entity = {
+      id: "paper",
+      kind: "paper",
+      width: 10,
+      height: 10,
+      surfaceId: "table",
+      transform: { x: 10, y: 10, rotation: 0, scale: 1 },
+      zIndex: 0,
+    };
+    expect(store.dispatch({ type: "createEntity", entity }).ok).toBe(true);
+    const accepted = store.world;
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(
+      store.dispatch({
+        type: "moveEntity",
+        entityId: "paper",
+        targetSurfaceId: "table",
+        transform: { x: 200, y: 10, rotation: 0, scale: 1 },
+      }).ok,
+    ).toBe(false);
+    expect(store.world).toBe(accepted);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+it("commits a successful trial without applying the command again", () => {
+  const store = new WorldStore(createWorld({ width: 100, height: 100 })),
+    command = {
+      type: "createEntity",
+      entity: {
+        id: "paper",
+        kind: "paper",
+        width: 10,
+        height: 10,
+        surfaceId: "table",
+        transform: { x: 10, y: 10, rotation: 0, scale: 1 },
+        zIndex: 0,
+      },
+    };
+  const trial = store.try(command),
+    committed = store.dispatch(command);
+  expect(committed.ok).toBe(true);
+  expect(committed.world).toBe(trial.world);
+  expect(store.history.undoStack).toHaveLength(1);
+  expect(store.undo().world.entities.paper).toBeUndefined();
+});
+it("does not reuse a trial after its command is mutated", () => {
+  const store = new WorldStore(createWorld({ width: 100, height: 100 })),
+    command = {
+      type: "createEntity",
+      entity: {
+        id: "paper",
+        kind: "paper",
+        surfaceId: "table",
+        transform: { x: 10, y: 10, rotation: 0, scale: 1 },
+        zIndex: 0,
+      },
+    };
+  const trial = store.try(command);
+  command.entity.transform.x = 25;
+  const committed = store.dispatch(command);
+  expect(committed.world).not.toBe(trial.world);
+  expect(committed.world.entities.paper.transform.x).toBe(25);
+});
+it("commits a successful group trial with its events and one history entry", () => {
+  const store = new WorldStore(createWorld({ width: 100, height: 100 })),
+    events = [],
+    commands = [
+      {
+        type: "createEntity",
+        entity: {
+          id: "a",
+          kind: "paper",
+          surfaceId: "table",
+          transform: { x: 10, y: 10, rotation: 0, scale: 1 },
+          zIndex: 0,
+        },
+      },
+      { type: "bringEntityToFront", entityId: "a" },
+    ];
+  store.subscribe((change) => events.push(...change.events));
+  const trial = store.tryGroup(commands),
+    committed = store.dispatchGroup(commands);
+  expect(committed.world).toBe(trial.world);
+  expect(events.map((event) => event.type)).toEqual([
+    "entityCreated",
+    "entityBroughtToFront",
+  ]);
+  expect(store.history.undoStack).toHaveLength(1);
+});
+it("atomically replaces the world with empty history", () => {
+  const store = new WorldStore(createWorld()),
+    next = createWorld({ width: 50, height: 60 });
+  store.replace(next);
+  expect(store.world).toBe(next);
+  expect(store.history.undoStack).toEqual([]);
+  expect(store.undo().ok).toBe(false);
+});

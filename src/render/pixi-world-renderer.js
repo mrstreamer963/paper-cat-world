@@ -1,62 +1,673 @@
 import { Application, Container, Graphics, Text, WebGLRenderer } from "pixi.js";
-import { transformPoint, invertMatrix, matrixFromTransform, multiplyMatrices, decomposeMatrix } from "../core/geometry/matrix.js";
-import { getEntityWorldTransform, getSurfaceWorldMatrix, isEntityVisible, isSurfaceVisible, isSurfaceLocallyVisible, pointInPolygon } from "../core/index.js";
+import {
+  transformPoint,
+  invertMatrix,
+  matrixFromTransform,
+  multiplyMatrices,
+  decomposeMatrix,
+} from "../core/geometry/matrix.js";
+import {
+  getEntityWorldTransform,
+  getSurfaceWorldMatrix,
+  isEntityVisible,
+  isSurfaceVisible,
+  isSurfaceLocallyVisible,
+  pointInPolygon,
+} from "../core/index.js";
 import { Camera } from "./camera.js";
 import { DrawingTextureCache } from "./drawing-texture-cache.js";
-function drawingForLod(drawing, lod) { if (lod >= 1) return drawing; return { ...drawing, strokes: drawing.strokes.map((stroke) => stroke.points.length < 3 ? stroke : { ...stroke, points: stroke.points.filter((_, index) => index % 2 === 0 || index === stroke.points.length - 1) }) }; }
-export class PixiWorldRenderer {
-  constructor(host, { drawingCacheBudget = 48, cullingMargin = 120 } = {}) { this.host = host; this.rendererBackend = WebGLRenderer; this.app = new Application(); this.camera = new Camera(); this.objects = new Map(); this.snaps = new Map(); this.transitions = new Map(); this.blockedNextActions = new Set(); this.snapFrame = null; this.cullingMargin = cullingMargin; this.stats = { displayObjects: 0, textureCacheSize: 0, cacheRebuilds: 0, frameTime: 0, culledObjects: 0 }; this.drawingCache = new DrawingTextureCache((drawing, lod) => this.createDrawingTexture(drawing, lod), (cached) => cached?.renderTexture?.destroy?.(true), { maxEntries: drawingCacheBudget }); }
-  blockNextAction(entityId) { this.blockedNextActions.add(entityId); }
-  isActionInProgress(entityId) { if (this.blockedNextActions.has(entityId)) { this.blockedNextActions.delete(entityId); return true; } return this.transitions.has(entityId); }
-  async init() { await this.app.init({ preference: "webgl", manageImports: false, resizeTo: this.host, antialias: true, backgroundAlpha: 0, resolution: devicePixelRatio || 1, autoDensity: true }); this.host.append(this.app.canvas); this.app.canvas.dataset.testid = "world-canvas"; this.app.canvas.style.touchAction = "none"; this.root = new Container(); this.table = new Graphics(); this.root.addChild(this.table); this.app.stage.addChild(this.root); }
-  resize() { this.camera.setViewport(this.host.clientWidth, this.host.clientHeight); }
-  screenToWorld(p) { return this.camera.screenToWorld(p); } worldToScreen(p) { return this.camera.worldToScreen(p); }
-  paintOrder(world) { const out = []; const sort = (items) => items.sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id)); const visit = (sid) => sort(Object.values(world.entities).filter((e) => e.surfaceId === sid && isEntityVisible(world, e.id))).forEach((e) => { const owned = Object.values(world.surfaces).filter((s) => s.hostEntityId === e.id && isSurfaceLocallyVisible(world, s)); if (e.kind === "cat") { const layer = (item) => world.rules.templates[e.templateId].zones[item.attachment?.zoneId]?.layer ?? 0; const attached = Object.values(world.entities).filter((item) => item.surfaceId === e.attachmentSurfaceId && isEntityVisible(world, item.id)).sort((a, b) => layer(a) - layer(b) || a.zIndex - b.zIndex || a.id.localeCompare(b.id)); attached.filter((item) => layer(item) < 0).forEach((item) => out.push(item)); out.push(e); attached.filter((item) => layer(item) >= 0).forEach((item) => out.push(item)); owned.filter((s) => s.id !== e.attachmentSurfaceId).forEach((s) => visit(s.id)); } else { out.push(e); owned.forEach((s) => visit(s.id)); } }); visit(world.table.surfaceId); return out; }
-  isInEntityBranch(world, entityId, ancestorId) { let current = world.entities[entityId]; const visited = new Set(); while (current) { if (current.id === ancestorId) return true; if (visited.has(current.id)) return false; visited.add(current.id); const surface = world.surfaces[current.surfaceId]; current = surface?.hostEntityId ? world.entities[surface.hostEntityId] : null; } return false; }
-  isInDragGroup(world, entityId, preview) { return Boolean(preview && [preview.entityId, ...(preview.carriedEntityIds || [])].some((rootId) => this.isInEntityBranch(world, entityId, rootId))); }
-  displayOrder(world, ui) { const order = this.paintOrder(world), preview = ui.dragPreview; if (!preview) return order; const isForeground = (entity) => this.isInDragGroup(world, entity.id, preview), foreground = order.filter(isForeground); return [...order.filter((entity) => !isForeground(entity)), ...foreground]; }
-  viewportWorldBounds(margin = this.cullingMargin) { const a = this.screenToWorld({ x: -margin, y: -margin }), b = this.screenToWorld({ x: this.camera.viewport.width + margin, y: this.camera.viewport.height + margin }); return { minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y), maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y) }; }
-  entityWorldAabb(world, entity) { const pose = getEntityWorldTransform(world, entity.id), matrix = matrixFromTransform(pose); let points; if (entity.kind === "cutout") points = entity.contour; else if (entity.kind === "cat") points = world.rules.templates[entity.templateId].silhouette; else { const left = entity.kind === "sheet" && entity.state === "closed" ? entity.width / 2 : 0; points = [{ x: left, y: 0 }, { x: entity.width, y: 0 }, { x: entity.width, y: entity.height }, { x: left, y: entity.height }]; } const transformed = points.map((point) => transformPoint(matrix, point)); return { minX: Math.min(...transformed.map((p) => p.x)), minY: Math.min(...transformed.map((p) => p.y)), maxX: Math.max(...transformed.map((p) => p.x)), maxY: Math.max(...transformed.map((p) => p.y)) }; }
-  isAabbVisible(aabb, viewport = this.viewportWorldBounds()) { return aabb.maxX >= viewport.minX && aabb.minX <= viewport.maxX && aabb.maxY >= viewport.minY && aabb.minY <= viewport.maxY; }
-  culledDisplayOrder(world, ui) { const viewport = this.viewportWorldBounds(), hiddenBranches = new Set(), order = []; for (const entity of this.displayOrder(world, ui)) { const hostId = world.surfaces[entity.surfaceId]?.hostEntityId; if ((hostId && hiddenBranches.has(hostId)) || !this.isAabbVisible(this.entityWorldAabb(world, entity), viewport)) { hiddenBranches.add(entity.id); continue; } order.push(entity); } return order; }
-  previewPose(world, entity, preview) { const pose = getEntityWorldTransform(world, entity.id); if (!this.isInDragGroup(world, entity.id, preview)) return pose; const originalRoot = getEntityWorldTransform(world, preview.entityId); const inverseRoot = invertMatrix(matrixFromTransform(originalRoot)); if (!inverseRoot) return pose; const delta = multiplyMatrices(matrixFromTransform(preview.transform), inverseRoot); return decomposeMatrix(multiplyMatrices(delta, matrixFromTransform(pose))) || pose; }
-  dragCompanionIds(world, entityId) { const order = this.paintOrder(world), rootIndex = order.findIndex((entity) => entity.id === entityId), root = world.entities[entityId]; if (!root || rootIndex < 0 || root.attachment) return []; const supports = [root], carried = []; const boundsArea = (bounds) => Math.max(0, bounds.maxX - bounds.minX) * Math.max(0, bounds.maxY - bounds.minY); const containsCenter = (outer, inner) => { const x = (inner.minX + inner.maxX) / 2, y = (inner.minY + inner.maxY) / 2; return x >= outer.minX && x <= outer.maxX && y >= outer.minY && y <= outer.maxY; }; for (const candidate of order.slice(rootIndex + 1)) { if (candidate.surfaceId !== root.surfaceId || candidate.attachment || this.isInEntityBranch(world, candidate.id, entityId)) continue; const candidateBounds = this.entityWorldAabb(world, candidate), support = supports.find((item) => { const supportBounds = this.entityWorldAabb(world, item); return boundsArea(candidateBounds) <= boundsArea(supportBounds) * 1.05 && containsCenter(supportBounds, candidateBounds); }); if (support) { carried.push(candidate.id); supports.push(candidate); } } return carried; }
-  hitTest(screenPoint) { if (!this.world) return []; const p = this.screenToWorld(screenPoint), order = this.paintOrder(this.world); return order.reverse().filter((e) => { const inv = invertMatrix(matrixFromTransform(getEntityWorldTransform(this.world, e.id))); if (!inv) return false; const q = transformPoint(inv, p), left = e.kind === "sheet" && e.state === "closed" ? e.width / 2 : 0; return e.kind === "cutout" ? pointInPolygon(q, e.contour) : e.kind === "cat" ? pointInPolygon(q, this.world.rules.templates[e.templateId].silhouette) : q.x >= left && q.y >= 0 && q.x <= e.width && q.y <= e.height; }); }
-  getSurfaceCandidates(screenPoint) { if (!this.world) return []; const p = this.screenToWorld(screenPoint), found = [], paintIndex = new Map(this.paintOrder(this.world).map((entity, index) => [entity.id, index])); for (const s of Object.values(this.world.surfaces)) { if (!isSurfaceVisible(this.world, s.id)) continue; const inv = invertMatrix(getSurfaceWorldMatrix(this.world, s.id)); if (inv && pointInPolygon(transformPoint(inv, p), s.placementArea)) found.push(s); } const depth = (s) => { let d = 0; while (s.hostEntityId) { d++; s = this.world.surfaces[this.world.entities[s.hostEntityId].surfaceId]; } return d; }; return found.sort((a, b) => depth(b) - depth(a) || (paintIndex.get(b.hostEntityId) ?? -1) - (paintIndex.get(a.hostEntityId) ?? -1)); }
-  activeDrawing(world, entity) { if (entity.drawingId) return world.drawings[entity.drawingId]; const surface = Object.values(world.surfaces).find((s) => s.hostEntityId === entity.id && isSurfaceLocallyVisible(world, s)); return surface?.drawingId ? world.drawings[surface.drawingId] : null; }
-  makeObject(entity) { const container = new Container(), body = new Graphics(), art = new Graphics(), mask = new Graphics(), label = new Text({ text: entity.label || entity.id, style: { fill: 0x3a312e, fontFamily: "system-ui", fontSize: 17, fontWeight: "600" } }); label.position.set(14, 13); container.addChild(body, art, mask, label); return { container, body, art, mask, label, artKey: null }; }
-  drawStroke(graphics, stroke) { const color = stroke.tool === "eraser" ? 0xffffff : stroke.color, alpha = stroke.tool === "eraser" ? .9 : 1, points = stroke.points; if (points.length === 1) graphics.circle(points[0].x, points[0].y, stroke.width / 2).fill({ color, alpha }); else { graphics.moveTo(points[0].x, points[0].y); for (const point of points.slice(1)) graphics.lineTo(point.x, point.y); graphics.stroke({ color, width: stroke.width, cap: "round", join: "round", alpha }); } }
-  createDrawingTexture(drawing, lod) { const source = drawingForLod(drawing, lod), graphics = new Graphics(); for (const stroke of source.strokes) this.drawStroke(graphics, stroke); if (source.strokes.length === 0) graphics.rect(0, 0, 1, 1).fill({ color: 0xffffff, alpha: 0 }); const bounds = graphics.getLocalBounds(), frame = { x: bounds.minX, y: bounds.minY, width: Math.max(1, bounds.maxX - bounds.minX), height: Math.max(1, bounds.maxY - bounds.minY) }, renderTexture = this.app.renderer.textureGenerator.generateTexture({ target: graphics, resolution: lod, antialias: true }); graphics.destroy(); return { drawing: { ...source, __renderTexture: renderTexture, __textureFrame: frame }, lod, renderTexture }; }
-  drawDrawing(graphics, drawing) { graphics.clear(); graphics.__drawingToken = (graphics.__drawingToken ?? 0) + 1; if (!drawing) return; if (drawing.__renderTexture) { const frame = drawing.__textureFrame; graphics.texture(drawing.__renderTexture, 0xffffff, frame.x, frame.y, frame.width, frame.height); return; } const token = graphics.__drawingToken, strokes = drawing.strokes; const chunk = (start) => { if (graphics.destroyed || graphics.__drawingToken !== token) return; const end = Math.min(strokes.length, start + 100); for (let index = start; index < end; index += 1) this.drawStroke(graphics, strokes[index]); if (end < strokes.length) requestAnimationFrame(() => chunk(end)); }; chunk(0); }
-  render(world, ui) { const frameStarted = performance.now(); this.world = world; this.resize(); this.root.position.set(this.camera.x, this.camera.y); this.root.scale.set(this.camera.zoom); this.table.clear().roundRect(0, 0, world.table.width, world.table.height, 18).fill(0xf4e7cc).stroke({ color: 0xc6ad86, width: 4 }); const live = new Set(), fullOrder = this.displayOrder(world, ui), renderOrder = this.culledDisplayOrder(world, ui), lod = this.camera.zoom < .55 ? .5 : 1; for (const e of renderOrder) { live.add(e.id); let d = this.objects.get(e.id); if (!d) { d = this.makeObject(e); this.objects.set(e.id, d); } d.container.visible = true; d.body.clear(); d.mask.clear(); d.label.visible = e.kind !== "cutout" && e.kind !== "cat"; const drawing = e.kind === "cutout" || e.kind === "cat" ? world.drawings[e.drawingId] : this.activeDrawing(world, e), cached = this.drawingCache.get(drawing, { visible: true, lod }), artKey = cached ? `${cached.drawing.id}:${cached.drawing.revision}:${cached.lod}` : "none"; if (d.artKey !== artKey) { this.drawDrawing(d.art, cached?.drawing); d.artKey = artKey; } if (e.kind === "cutout") { d.body.poly(e.contour.flatMap((p) => [p.x,p.y])).fill(0xffffff).stroke({ color: ui.selectedEntityId === e.id ? 0x493b91 : 0x574c46, width: ui.selectedEntityId === e.id ? 4 : 1 }); d.mask.poly(e.contour.flatMap((p) => [p.x,p.y])).fill(0xffffff); d.art.mask = d.mask; } else if (e.kind === "cat") { const silhouette = world.rules.templates[e.templateId].silhouette; d.body.poly(silhouette.flatMap((p) => [p.x,p.y])).fill(0xfffbef).stroke({ color: ui.selectedEntityId === e.id ? 0x493b91 : 0x574c46, width: ui.selectedEntityId === e.id ? 5 : 2 }); d.mask.poly(silhouette.flatMap((p) => [p.x,p.y])).fill(0xffffff); d.art.mask = d.mask; } else { const closedSheet = e.kind === "sheet" && e.state === "closed", displayLeft = closedSheet ? e.width / 2 : 0, displayWidth = closedSheet ? e.width / 2 : e.width; d.art.position.x = displayLeft; d.label.position.x = displayLeft + 14; d.body.roundRect(displayLeft, 0, displayWidth, e.height, 7).fill(e.color || (e.kind === "notebook" ? 0xb96955 : e.kind === "sheet" ? 0xf7e7bd : 0xdddddd)).stroke({ color: ui.selectedEntityId === e.id ? 0x493b91 : 0x574c46, width: ui.selectedEntityId === e.id ? 5 : 2 }); d.mask.roundRect(displayLeft, 0, displayWidth, e.height, 7).fill(0xffffff); d.art.mask = d.mask; if ((e.kind === "sheet" || e.kind === "notebook") && e.state === "open") d.body.moveTo(e.width / 2, 0).lineTo(e.width / 2, e.height).stroke({ color: 0x9b846b, width: e.kind === "sheet" ? 1.5 : 2, alpha: e.kind === "sheet" ? .42 : .65 }); } const pose = this.previewPose(world, e, ui.dragPreview); d.container.position.set(pose.x, pose.y); d.container.rotation = pose.rotation; d.container.scale.set(pose.scale); this.root.addChild(d.container); } for (const [id, d] of this.objects) if (!live.has(id)) { const entity = world.entities[id]; if (entity) { d.container.visible = false; const drawing = this.activeDrawing(world, entity); if (drawing) this.drawingCache.markInvisible(drawing.id); } else { d.container.destroy({ children: true }); this.objects.delete(id); } } this.stats = { displayObjects: this.objects.size + 2, textureCacheSize: this.drawingCache.size, cacheRebuilds: this.drawingCache.rebuilds, frameTime: performance.now() - frameStarted, culledObjects: fullOrder.length - renderOrder.length }; }
+function drawingForLod(drawing, lod) {
+  if (lod >= 1) return drawing;
+  return {
+    ...drawing,
+    strokes: drawing.strokes.map((stroke) =>
+      stroke.points.length < 3
+        ? stroke
+        : {
+            ...stroke,
+            points: stroke.points.filter(
+              (_, index) =>
+                index % 2 === 0 || index === stroke.points.length - 1,
+            ),
+          },
+    ),
+  };
 }
-
-const renderWorldImmediately = PixiWorldRenderer.prototype.render;
-PixiWorldRenderer.prototype.render = function renderWithWearableSnap(world, ui, events = []) {
-  this.lastUi = ui;
-  for (const event of events) {
-    if (event.type === "wearableAttached" && event.fromWorldTransform) this.snaps.set(event.wearableId, { from: event.fromWorldTransform, startedAt: performance.now() });
-    if (event.type === "sheetStateChanged") this.transitions.set(event.sheetId, { type: "sheet-fold", opening: event.newState === "open", startedAt: performance.now(), duration: 240 });
-    if (event.type === "notebookStateChanged") this.transitions.set(event.notebookId, { type: "fold", startedAt: performance.now(), duration: 240 });
-    if (event.type === "activeSpreadChanged") this.transitions.set(event.notebookId, { type: "page", startedAt: performance.now(), duration: 190 });
+export class PixiWorldRenderer {
+  constructor(host, { drawingCacheBudget = 48, cullingMargin = 120 } = {}) {
+    this.host = host;
+    this.rendererBackend = WebGLRenderer;
+    this.app = new Application();
+    this.camera = new Camera();
+    this.objects = new Map();
+    this.snaps = new Map();
+    this.transitions = new Map();
+    this.blockedNextActions = new Set();
+    this.snapFrame = null;
+    this.cullingMargin = cullingMargin;
+    this.stats = {
+      displayObjects: 0,
+      textureCacheSize: 0,
+      cacheRebuilds: 0,
+      frameTime: 0,
+      culledObjects: 0,
+    };
+    this.drawingCache = new DrawingTextureCache(
+      (drawing, lod) => this.createDrawingTexture(drawing, lod),
+      (cached) => cached?.renderTexture?.destroy?.(true),
+      { maxEntries: drawingCacheBudget },
+    );
   }
-  renderWorldImmediately.call(this, world, ui);
-  const now = performance.now(); let active = false;
-  for (const [entityId, snap] of this.snaps) {
-    const object = this.objects.get(entityId); if (!object || !world.entities[entityId]) { this.snaps.delete(entityId); continue; }
-    const target = getEntityWorldTransform(world, entityId), progress = Math.min(1, (now - snap.startedAt) / 180), eased = 1 - (1 - progress) ** 3;
-    const angleDelta = Math.atan2(Math.sin(target.rotation - snap.from.rotation), Math.cos(target.rotation - snap.from.rotation));
-    object.container.position.set(snap.from.x + (target.x - snap.from.x) * eased, snap.from.y + (target.y - snap.from.y) * eased);
-    object.container.rotation = snap.from.rotation + angleDelta * eased; object.container.scale.set(snap.from.scale + (target.scale - snap.from.scale) * eased);
-    if (progress >= 1) this.snaps.delete(entityId); else active = true;
+  blockNextAction(entityId) {
+    this.blockedNextActions.add(entityId);
   }
-  for (const [entityId, transition] of this.transitions) {
-    const object = this.objects.get(entityId); if (!object) { this.transitions.delete(entityId); continue; }
-    const progress = Math.min(1, (now - transition.startedAt) / transition.duration), wave = Math.sin(progress * Math.PI);
-    if (transition.type === "sheet-fold") { const eased = 1 - (1 - progress) ** 3, widthFactor = transition.opening ? .5 + .5 * eased : 2 - eased, entity = world.entities[entityId], pose = entity && getEntityWorldTransform(world, entityId); object.container.scale.x *= widthFactor; if (entity && pose) { const correction = entity.width * (1 - widthFactor) * pose.scale; object.container.position.x += Math.cos(pose.rotation) * correction; object.container.position.y += Math.sin(pose.rotation) * correction; } object.container.skew.y = wave * .06; }
-    else if (transition.type === "fold") { object.container.skew.y = wave * .08; object.container.scale.x *= 1 - wave * .18; }
-    else { object.container.alpha = 1 - wave * .35; object.container.position.x += wave * 12; }
-    if (progress >= 1) { object.container.skew.y = 0; object.container.alpha = 1; this.transitions.delete(entityId); } else active = true;
+  isActionInProgress(entityId) {
+    if (this.blockedNextActions.has(entityId)) {
+      this.blockedNextActions.delete(entityId);
+      return true;
+    }
+    return this.transitions.has(entityId);
   }
-  if (active && this.snapFrame === null) this.snapFrame = requestAnimationFrame(() => { this.snapFrame = null; this.render(this.world, this.lastUi); });
-};
+  destroy() {
+    if (this.snapFrame !== null) cancelAnimationFrame(this.snapFrame);
+    this.drawingCache.clear();
+    this.objects.clear();
+    this.app.destroy(true, { children: true });
+  }
+  async init() {
+    await this.app.init({
+      preference: "webgl",
+      manageImports: false,
+      resizeTo: this.host,
+      antialias: true,
+      backgroundAlpha: 0,
+      resolution: devicePixelRatio || 1,
+      autoDensity: true,
+    });
+    this.host.append(this.app.canvas);
+    this.app.canvas.dataset.testid = "world-canvas";
+    this.app.canvas.style.touchAction = "none";
+    this.root = new Container();
+    this.table = new Graphics();
+    this.root.addChild(this.table);
+    this.app.stage.addChild(this.root);
+  }
+  resize() {
+    this.camera.setViewport(this.host.clientWidth, this.host.clientHeight);
+  }
+  screenToWorld(p) {
+    return this.camera.screenToWorld(p);
+  }
+  worldToScreen(p) {
+    return this.camera.worldToScreen(p);
+  }
+  paintOrder(world) {
+    const out = [];
+    const sort = (items) =>
+      items.sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id));
+    const visit = (sid) =>
+      sort(
+        Object.values(world.entities).filter(
+          (e) => e.surfaceId === sid && isEntityVisible(world, e.id),
+        ),
+      ).forEach((e) => {
+        const owned = Object.values(world.surfaces).filter(
+          (s) => s.hostEntityId === e.id && isSurfaceLocallyVisible(world, s),
+        );
+        if (e.kind === "cat") {
+          const layer = (item) =>
+            world.rules.templates[e.templateId].zones[item.attachment?.zoneId]
+              ?.layer ?? 0;
+          const attached = Object.values(world.entities)
+            .filter(
+              (item) =>
+                item.surfaceId === e.attachmentSurfaceId &&
+                isEntityVisible(world, item.id),
+            )
+            .sort(
+              (a, b) =>
+                layer(a) - layer(b) ||
+                a.zIndex - b.zIndex ||
+                a.id.localeCompare(b.id),
+            );
+          attached
+            .filter((item) => layer(item) < 0)
+            .forEach((item) => out.push(item));
+          out.push(e);
+          attached
+            .filter((item) => layer(item) >= 0)
+            .forEach((item) => out.push(item));
+          owned
+            .filter((s) => s.id !== e.attachmentSurfaceId)
+            .forEach((s) => visit(s.id));
+        } else {
+          out.push(e);
+          owned.forEach((s) => visit(s.id));
+        }
+      });
+    visit(world.table.surfaceId);
+    return out;
+  }
+  isInEntityBranch(world, entityId, ancestorId) {
+    let current = world.entities[entityId];
+    const visited = new Set();
+    while (current) {
+      if (current.id === ancestorId) return true;
+      if (visited.has(current.id)) return false;
+      visited.add(current.id);
+      const surface = world.surfaces[current.surfaceId];
+      current = surface?.hostEntityId
+        ? world.entities[surface.hostEntityId]
+        : null;
+    }
+    return false;
+  }
+  isInDragGroup(world, entityId, preview) {
+    return Boolean(
+      preview &&
+        [preview.entityId, ...(preview.carriedEntityIds || [])].some((rootId) =>
+          this.isInEntityBranch(world, entityId, rootId),
+        ),
+    );
+  }
+  displayOrder(world, ui) {
+    const order = this.paintOrder(world),
+      preview = ui.dragPreview;
+    if (!preview) return order;
+    const isForeground = (entity) =>
+        this.isInDragGroup(world, entity.id, preview),
+      foreground = order.filter(isForeground);
+    return [...order.filter((entity) => !isForeground(entity)), ...foreground];
+  }
+  viewportWorldBounds(margin = this.cullingMargin) {
+    const a = this.screenToWorld({ x: -margin, y: -margin }),
+      b = this.screenToWorld({
+        x: this.camera.viewport.width + margin,
+        y: this.camera.viewport.height + margin,
+      });
+    return {
+      minX: Math.min(a.x, b.x),
+      minY: Math.min(a.y, b.y),
+      maxX: Math.max(a.x, b.x),
+      maxY: Math.max(a.y, b.y),
+    };
+  }
+  entityWorldAabb(world, entity) {
+    const pose = getEntityWorldTransform(world, entity.id),
+      matrix = matrixFromTransform(pose);
+    let points;
+    if (entity.kind === "cutout") points = entity.contour;
+    else if (entity.kind === "cat")
+      points = world.rules.templates[entity.templateId].silhouette;
+    else {
+      const left =
+        entity.kind === "sheet" && entity.state === "closed"
+          ? entity.width / 2
+          : 0;
+      points = [
+        { x: left, y: 0 },
+        { x: entity.width, y: 0 },
+        { x: entity.width, y: entity.height },
+        { x: left, y: entity.height },
+      ];
+    }
+    const transformed = points.map((point) => transformPoint(matrix, point));
+    return {
+      minX: Math.min(...transformed.map((p) => p.x)),
+      minY: Math.min(...transformed.map((p) => p.y)),
+      maxX: Math.max(...transformed.map((p) => p.x)),
+      maxY: Math.max(...transformed.map((p) => p.y)),
+    };
+  }
+  isAabbVisible(aabb, viewport = this.viewportWorldBounds()) {
+    return (
+      aabb.maxX >= viewport.minX &&
+      aabb.minX <= viewport.maxX &&
+      aabb.maxY >= viewport.minY &&
+      aabb.minY <= viewport.maxY
+    );
+  }
+  culledDisplayOrder(world, ui, displayOrder = this.displayOrder(world, ui)) {
+    const viewport = this.viewportWorldBounds(),
+      hiddenBranches = new Set(),
+      order = [];
+    for (const entity of displayOrder) {
+      const hostId = world.surfaces[entity.surfaceId]?.hostEntityId;
+      if (
+        (hostId && hiddenBranches.has(hostId)) ||
+        !this.isAabbVisible(this.entityWorldAabb(world, entity), viewport)
+      ) {
+        hiddenBranches.add(entity.id);
+        continue;
+      }
+      order.push(entity);
+    }
+    return order;
+  }
+  previewPose(world, entity, preview) {
+    const pose = getEntityWorldTransform(world, entity.id);
+    if (!this.isInDragGroup(world, entity.id, preview)) return pose;
+    const originalRoot = getEntityWorldTransform(world, preview.entityId);
+    const inverseRoot = invertMatrix(matrixFromTransform(originalRoot));
+    if (!inverseRoot) return pose;
+    const delta = multiplyMatrices(
+      matrixFromTransform(preview.transform),
+      inverseRoot,
+    );
+    return (
+      decomposeMatrix(multiplyMatrices(delta, matrixFromTransform(pose))) ||
+      pose
+    );
+  }
+  dragCompanionIds(world, entityId) {
+    const order = this.paintOrder(world),
+      rootIndex = order.findIndex((entity) => entity.id === entityId),
+      root = world.entities[entityId];
+    if (!root || rootIndex < 0 || root.attachment) return [];
+    const supports = [root],
+      carried = [];
+    const boundsArea = (bounds) =>
+      Math.max(0, bounds.maxX - bounds.minX) *
+      Math.max(0, bounds.maxY - bounds.minY);
+    const containsCenter = (outer, inner) => {
+      const x = (inner.minX + inner.maxX) / 2,
+        y = (inner.minY + inner.maxY) / 2;
+      return (
+        x >= outer.minX && x <= outer.maxX && y >= outer.minY && y <= outer.maxY
+      );
+    };
+    for (const candidate of order.slice(rootIndex + 1)) {
+      if (
+        candidate.surfaceId !== root.surfaceId ||
+        candidate.attachment ||
+        this.isInEntityBranch(world, candidate.id, entityId)
+      )
+        continue;
+      const candidateBounds = this.entityWorldAabb(world, candidate),
+        support = supports.find((item) => {
+          const supportBounds = this.entityWorldAabb(world, item);
+          return (
+            boundsArea(candidateBounds) <= boundsArea(supportBounds) * 1.05 &&
+            containsCenter(supportBounds, candidateBounds)
+          );
+        });
+      if (support) {
+        carried.push(candidate.id);
+        supports.push(candidate);
+      }
+    }
+    return carried;
+  }
+  hitTest(screenPoint) {
+    if (!this.world) return [];
+    const p = this.screenToWorld(screenPoint),
+      order = this.paintOrder(this.world);
+    return order.reverse().filter((e) => {
+      const inv = invertMatrix(
+        matrixFromTransform(getEntityWorldTransform(this.world, e.id)),
+      );
+      if (!inv) return false;
+      const q = transformPoint(inv, p),
+        left = e.kind === "sheet" && e.state === "closed" ? e.width / 2 : 0;
+      return e.kind === "cutout"
+        ? pointInPolygon(q, e.contour)
+        : e.kind === "cat"
+          ? pointInPolygon(
+              q,
+              this.world.rules.templates[e.templateId].silhouette,
+            )
+          : q.x >= left && q.y >= 0 && q.x <= e.width && q.y <= e.height;
+    });
+  }
+  getSurfaceCandidates(screenPoint) {
+    if (!this.world) return [];
+    const p = this.screenToWorld(screenPoint),
+      found = [],
+      paintIndex = new Map(
+        this.paintOrder(this.world).map((entity, index) => [entity.id, index]),
+      );
+    for (const s of Object.values(this.world.surfaces)) {
+      if (!isSurfaceVisible(this.world, s.id)) continue;
+      const inv = invertMatrix(getSurfaceWorldMatrix(this.world, s.id));
+      if (inv && pointInPolygon(transformPoint(inv, p), s.placementArea))
+        found.push(s);
+    }
+    const depth = (s) => {
+      let d = 0;
+      const visited = new Set();
+      while (s.hostEntityId) {
+        if (visited.has(s.id)) return -1;
+        visited.add(s.id);
+        const host = this.world.entities[s.hostEntityId];
+        if (!host) return -1;
+        d++;
+        s = this.world.surfaces[host.surfaceId];
+        if (!s) return -1;
+      }
+      return d;
+    };
+    return found.sort(
+      (a, b) =>
+        depth(b) - depth(a) ||
+        (paintIndex.get(b.hostEntityId) ?? -1) -
+          (paintIndex.get(a.hostEntityId) ?? -1),
+    );
+  }
+  activeDrawing(world, entity) {
+    if (entity.drawingId) return world.drawings[entity.drawingId];
+    const surface = Object.values(world.surfaces).find(
+      (s) => s.hostEntityId === entity.id && isSurfaceLocallyVisible(world, s),
+    );
+    return surface?.drawingId ? world.drawings[surface.drawingId] : null;
+  }
+  makeObject(entity) {
+    const container = new Container(),
+      body = new Graphics(),
+      art = new Graphics(),
+      mask = new Graphics(),
+      label = new Text({
+        text: entity.label || entity.id,
+        style: {
+          fill: 0x3a312e,
+          fontFamily: "system-ui",
+          fontSize: 17,
+          fontWeight: "600",
+        },
+      });
+    label.position.set(14, 13);
+    container.addChild(body, art, mask, label);
+    return { container, body, art, mask, label, artKey: null };
+  }
+  drawStroke(graphics, stroke) {
+    const color = stroke.tool === "eraser" ? 0xffffff : stroke.color,
+      alpha = stroke.tool === "eraser" ? 0.9 : 1,
+      points = stroke.points;
+    if (points.length === 1)
+      graphics
+        .circle(points[0].x, points[0].y, stroke.width / 2)
+        .fill({ color, alpha });
+    else {
+      graphics.moveTo(points[0].x, points[0].y);
+      for (const point of points.slice(1)) graphics.lineTo(point.x, point.y);
+      graphics.stroke({
+        color,
+        width: stroke.width,
+        cap: "round",
+        join: "round",
+        alpha,
+      });
+    }
+  }
+  createDrawingTexture(drawing, lod) {
+    const source = drawingForLod(drawing, lod),
+      graphics = new Graphics();
+    for (const stroke of source.strokes) this.drawStroke(graphics, stroke);
+    if (source.strokes.length === 0)
+      graphics.rect(0, 0, 1, 1).fill({ color: 0xffffff, alpha: 0 });
+    const bounds = graphics.getLocalBounds(),
+      frame = {
+        x: bounds.minX,
+        y: bounds.minY,
+        width: Math.max(1, bounds.maxX - bounds.minX),
+        height: Math.max(1, bounds.maxY - bounds.minY),
+      },
+      renderTexture = this.app.renderer.textureGenerator.generateTexture({
+        target: graphics,
+        resolution: lod,
+        antialias: true,
+      });
+    graphics.destroy();
+    return {
+      drawing: {
+        ...source,
+        __renderTexture: renderTexture,
+        __textureFrame: frame,
+      },
+      lod,
+      renderTexture,
+    };
+  }
+  drawDrawing(graphics, drawing) {
+    graphics.clear();
+    graphics.__drawingToken = (graphics.__drawingToken ?? 0) + 1;
+    if (!drawing) return;
+    if (drawing.__renderTexture) {
+      const frame = drawing.__textureFrame;
+      graphics.texture(
+        drawing.__renderTexture,
+        0xffffff,
+        frame.x,
+        frame.y,
+        frame.width,
+        frame.height,
+      );
+      return;
+    }
+    const token = graphics.__drawingToken,
+      strokes = drawing.strokes;
+    const chunk = (start) => {
+      if (graphics.destroyed || graphics.__drawingToken !== token) return;
+      const end = Math.min(strokes.length, start + 100);
+      for (let index = start; index < end; index += 1)
+        this.drawStroke(graphics, strokes[index]);
+      if (end < strokes.length) requestAnimationFrame(() => chunk(end));
+    };
+    chunk(0);
+  }
+  renderFrame(world, ui) {
+    const frameStarted = performance.now();
+    this.world = world;
+    this.resize();
+    this.root.position.set(this.camera.x, this.camera.y);
+    this.root.scale.set(this.camera.zoom);
+    this.table
+      .clear()
+      .roundRect(0, 0, world.table.width, world.table.height, 18)
+      .fill(0xf4e7cc)
+      .stroke({ color: 0xc6ad86, width: 4 });
+    const live = new Set(),
+      fullOrder = this.displayOrder(world, ui),
+      renderOrder = this.culledDisplayOrder(world, ui, fullOrder),
+      lod = this.camera.zoom < 0.55 ? 0.5 : 1;
+    for (const e of renderOrder) {
+      live.add(e.id);
+      let d = this.objects.get(e.id);
+      if (!d) {
+        d = this.makeObject(e);
+        this.objects.set(e.id, d);
+      }
+      d.container.visible = true;
+      d.body.clear();
+      d.mask.clear();
+      d.label.visible = e.kind !== "cutout" && e.kind !== "cat";
+      const drawing =
+          e.kind === "cutout" || e.kind === "cat"
+            ? world.drawings[e.drawingId]
+            : this.activeDrawing(world, e),
+        cached = this.drawingCache.get(drawing, { visible: true, lod }),
+        artKey = cached
+          ? `${cached.drawing.id}:${cached.drawing.revision}:${cached.lod}`
+          : "none";
+      if (d.artKey !== artKey) {
+        this.drawDrawing(d.art, cached?.drawing);
+        d.artKey = artKey;
+      }
+      if (e.kind === "cutout") {
+        d.body
+          .poly(e.contour.flatMap((p) => [p.x, p.y]))
+          .fill(0xffffff)
+          .stroke({
+            color: ui.selectedEntityId === e.id ? 0x493b91 : 0x574c46,
+            width: ui.selectedEntityId === e.id ? 4 : 1,
+          });
+        d.mask.poly(e.contour.flatMap((p) => [p.x, p.y])).fill(0xffffff);
+        d.art.mask = d.mask;
+      } else if (e.kind === "cat") {
+        const silhouette = world.rules.templates[e.templateId].silhouette;
+        d.body
+          .poly(silhouette.flatMap((p) => [p.x, p.y]))
+          .fill(0xfffbef)
+          .stroke({
+            color: ui.selectedEntityId === e.id ? 0x493b91 : 0x574c46,
+            width: ui.selectedEntityId === e.id ? 5 : 2,
+          });
+        d.mask.poly(silhouette.flatMap((p) => [p.x, p.y])).fill(0xffffff);
+        d.art.mask = d.mask;
+      } else {
+        const closedSheet = e.kind === "sheet" && e.state === "closed",
+          displayLeft = closedSheet ? e.width / 2 : 0,
+          displayWidth = closedSheet ? e.width / 2 : e.width;
+        d.art.position.x = displayLeft;
+        d.label.position.x = displayLeft + 14;
+        d.body
+          .roundRect(displayLeft, 0, displayWidth, e.height, 7)
+          .fill(
+            e.color ||
+              (e.kind === "notebook"
+                ? 0xb96955
+                : e.kind === "sheet"
+                  ? 0xf7e7bd
+                  : 0xdddddd),
+          )
+          .stroke({
+            color: ui.selectedEntityId === e.id ? 0x493b91 : 0x574c46,
+            width: ui.selectedEntityId === e.id ? 5 : 2,
+          });
+        d.mask
+          .roundRect(displayLeft, 0, displayWidth, e.height, 7)
+          .fill(0xffffff);
+        d.art.mask = d.mask;
+        if ((e.kind === "sheet" || e.kind === "notebook") && e.state === "open")
+          d.body
+            .moveTo(e.width / 2, 0)
+            .lineTo(e.width / 2, e.height)
+            .stroke({
+              color: 0x9b846b,
+              width: e.kind === "sheet" ? 1.5 : 2,
+              alpha: e.kind === "sheet" ? 0.42 : 0.65,
+            });
+      }
+      const pose = this.previewPose(world, e, ui.dragPreview);
+      d.container.position.set(pose.x, pose.y);
+      d.container.rotation = pose.rotation;
+      d.container.scale.set(pose.scale);
+      this.root.addChild(d.container);
+    }
+    for (const [id, d] of this.objects)
+      if (!live.has(id)) {
+        const entity = world.entities[id];
+        if (entity) {
+          d.container.visible = false;
+          const drawing = this.activeDrawing(world, entity);
+          if (drawing) this.drawingCache.markInvisible(drawing.id);
+        } else {
+          d.container.destroy({ children: true });
+          this.objects.delete(id);
+        }
+      }
+    this.stats = {
+      displayObjects: this.objects.size + 2,
+      textureCacheSize: this.drawingCache.size,
+      cacheRebuilds: this.drawingCache.rebuilds,
+      frameTime: performance.now() - frameStarted,
+      culledObjects: fullOrder.length - renderOrder.length,
+    };
+  }
+  render(world, ui, events = []) {
+    this.lastUi = ui;
+    for (const event of events) {
+      if (event.type === "wearableAttached" && event.fromWorldTransform)
+        this.snaps.set(event.wearableId, {
+          from: event.fromWorldTransform,
+          startedAt: performance.now(),
+        });
+      if (event.type === "sheetStateChanged")
+        this.transitions.set(event.sheetId, {
+          type: "sheet-fold",
+          opening: event.newState === "open",
+          startedAt: performance.now(),
+          duration: 240,
+        });
+      if (event.type === "notebookStateChanged")
+        this.transitions.set(event.notebookId, {
+          type: "fold",
+          startedAt: performance.now(),
+          duration: 240,
+        });
+      if (event.type === "activeSpreadChanged")
+        this.transitions.set(event.notebookId, {
+          type: "page",
+          startedAt: performance.now(),
+          duration: 190,
+        });
+    }
+    this.renderFrame(world, ui);
+    const now = performance.now();
+    let active = false;
+    for (const [entityId, snap] of this.snaps) {
+      const object = this.objects.get(entityId);
+      if (!object || !world.entities[entityId]) {
+        this.snaps.delete(entityId);
+        continue;
+      }
+      const target = getEntityWorldTransform(world, entityId),
+        progress = Math.min(1, (now - snap.startedAt) / 180),
+        eased = 1 - (1 - progress) ** 3;
+      const angleDelta = Math.atan2(
+        Math.sin(target.rotation - snap.from.rotation),
+        Math.cos(target.rotation - snap.from.rotation),
+      );
+      object.container.position.set(
+        snap.from.x + (target.x - snap.from.x) * eased,
+        snap.from.y + (target.y - snap.from.y) * eased,
+      );
+      object.container.rotation = snap.from.rotation + angleDelta * eased;
+      object.container.scale.set(
+        snap.from.scale + (target.scale - snap.from.scale) * eased,
+      );
+      if (progress >= 1) this.snaps.delete(entityId);
+      else active = true;
+    }
+    for (const [entityId, transition] of this.transitions) {
+      const object = this.objects.get(entityId);
+      if (!object) {
+        this.transitions.delete(entityId);
+        continue;
+      }
+      const progress = Math.min(
+          1,
+          (now - transition.startedAt) / transition.duration,
+        ),
+        wave = Math.sin(progress * Math.PI);
+      if (transition.type === "sheet-fold") {
+        const eased = 1 - (1 - progress) ** 3,
+          widthFactor = transition.opening ? 0.5 + 0.5 * eased : 2 - eased,
+          entity = world.entities[entityId],
+          pose = entity && getEntityWorldTransform(world, entityId);
+        object.container.scale.x *= widthFactor;
+        if (entity && pose) {
+          const correction = entity.width * (1 - widthFactor) * pose.scale;
+          object.container.position.x += Math.cos(pose.rotation) * correction;
+          object.container.position.y += Math.sin(pose.rotation) * correction;
+        }
+        object.container.skew.y = wave * 0.06;
+      } else if (transition.type === "fold") {
+        object.container.skew.y = wave * 0.08;
+        object.container.scale.x *= 1 - wave * 0.18;
+      } else {
+        object.container.alpha = 1 - wave * 0.35;
+        object.container.position.x += wave * 12;
+      }
+      if (progress >= 1) {
+        object.container.skew.y = 0;
+        object.container.alpha = 1;
+        this.transitions.delete(entityId);
+      } else active = true;
+    }
+    if (active && this.snapFrame === null)
+      this.snapFrame = requestAnimationFrame(() => {
+        this.snapFrame = null;
+        this.render(this.world, this.lastUi);
+      });
+  }
+}

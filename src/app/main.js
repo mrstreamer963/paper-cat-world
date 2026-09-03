@@ -1,58 +1,447 @@
-import "./styles.css"; import { createFixtureWorld } from "./fixture.js"; import { WorldStore } from "./world-store.js"; import { PixiWorldRenderer } from "../render/pixi-world-renderer.js"; import { InteractionController } from "./interaction-controller.js"; import { getEntityWorldTransform, isEntityVisible, loadWorld, serializeWorld } from "../core/index.js"; import { loadCatTemplates } from "./cat-template-loader.js"; import { AutosaveService } from "./autosave.js";
+import "./styles.css";
+import { createFixtureWorld } from "./fixture.js";
+import { WorldStore } from "./world-store.js";
+import { PixiWorldRenderer } from "../render/pixi-world-renderer.js";
+import { InteractionController } from "./interaction-controller.js";
+import {
+  getEntityWorldTransform,
+  isEntityVisible,
+  loadWorld,
+  serializeWorld,
+} from "../core/index.js";
+import { loadCatTemplates } from "./cat-template-loader.js";
+import { AutosaveService } from "./autosave.js";
 import { DrawingEditor } from "./drawing-editor.js";
 import { TraceRecorder } from "./trace-recorder.js";
-const root = document.querySelector("#app"); root.innerHTML = `<main><section class="stage" aria-label="Бумажный стол"></section><header><div><strong>Бумажный мир</strong><span> двигайте детали и камеру</span></div><div class="create-actions"><button data-action="new-world">Начать новый мир</button><button data-action="new-cat">Новый кот</button><button data-action="new-wearable">Новая одежда</button><button data-action="new-sheet">Новый лист</button><button data-action="new-notebook">Новая тетрадь</button><button data-action="fit">Показать весь стол</button><button data-action="export">Сохранить</button><button data-action="import">Загрузить</button><button data-action="trace" title="Скачать диагностический трейс">Скачать трейс</button><input data-import type="file" accept="application/json,.json" hidden></div></header><aside hidden><b data-label></b><button data-action="draw">Рисовать</button><button data-action="sheet-inside">Внутри</button><button data-action="sheet-top">Сверху</button><button data-action="sheet-bottom">Снизу</button><button data-action="toggle">Открыть</button><button data-action="previous">← Комната</button><button data-action="next">Комната →</button><button data-action="detach">Снять</button><button data-action="left" aria-label="Повернуть против часовой стрелки">↶</button><button data-action="right" aria-label="Повернуть по часовой стрелке">↷</button><button data-action="clear">Снять выбор</button></aside><div class="editor" hidden><nav aria-label="Инструменты рисования"><button data-tool="brush" class="active">Кисть</button><button data-tool="eraser">Ластик</button><button data-tool="scissors">✂ Контур</button><label>Цвет <input data-color type="color" value="#3a312e"></label><label>Размер <input data-size type="range" min="2" max="32" value="8"></label><button data-action="undo" aria-label="Отменить">↶</button><button data-action="redo">Повторить</button><button data-action="done">Готово</button><button data-action="close">Отмена</button></nav></div><div class="toast" role="status"></div></main>`;
-if (import.meta.env.DEV) root.querySelector("main").insertAdjacentHTML("beforeend", `<div class="debug" data-testid="debug-stats" aria-label="Статистика renderer"></div>`);
-const stage = root.querySelector(".stage"), panel = root.querySelector("aside"), toast = root.querySelector(".toast"); const templates = await loadCatTemplates(); const initialWorld = createFixtureWorld(templates); const trace = new TraceRecorder(); const store = new WorldStore(initialWorld, { trace }); const autosave = new AutosaveService({ serialize: serializeWorld, onError: (error) => notify(error.code) }); const renderer = new PixiWorldRenderer(stage); const ui = { selectedEntityId: null, interaction: { mode: "idle", pointerIds: [], dragPreview: null }, camera: renderer.camera, dragPreview: null }; await renderer.init();
-const update = (events = []) => { if (ui.selectedEntityId && !store.world.entities[ui.selectedEntityId]) ui.selectedEntityId = null; const entity = store.world.entities[ui.selectedEntityId]; panel.hidden = !entity; panel.querySelector("[data-action=draw]").hidden = !entity?.drawingId; panel.querySelector("[data-action=detach]").hidden = !entity?.attachment; for (const action of ["sheet-inside", "sheet-top", "sheet-bottom"]) panel.querySelector(`[data-action=${action}]`).hidden = entity?.kind !== "sheet"; panel.querySelector("[data-action=toggle]").hidden = !["sheet", "notebook"].includes(entity?.kind); panel.querySelector("[data-action=toggle]").textContent = entity?.state === "open" ? "Закрыть" : "Открыть"; for (const action of ["previous", "next"]) panel.querySelector(`[data-action=${action}]`).hidden = entity?.kind !== "notebook" || entity.state !== "open"; if (entity) panel.querySelector("[data-label]").textContent = entity.label || entity.id; const main = root.querySelector("main"), entities = Object.values(store.world.entities); main.dataset.cameraZoom = String(renderer.camera.zoom); main.dataset.entityCount = String(entities.length); main.dataset.catCount = String(entities.filter((item) => item.kind === "cat").length); main.dataset.wearableCount = String(entities.filter((item) => item.wearable).length); main.dataset.attachmentCat = entity?.attachment?.catId ?? ""; main.dataset.selectedEntity = entity?.id ?? ""; main.dataset.selectedState = entity?.state ?? ""; main.dataset.activeSpread = entity?.kind === "notebook" ? String(entity.activeSpreadIndex) : ""; main.dataset.visibleEntities = entities.filter((item) => isEntityVisible(store.world, item.id)).map((item) => item.id).sort().join(","); main.dataset.catBlueSurface = store.world.entities["cat-blue"]?.surfaceId ?? ""; main.dataset.catBlueZ = String(store.world.entities["cat-blue"]?.zIndex ?? ""); main.dataset.notebookHomeAZ = String(store.world.entities["notebook-home-a"]?.zIndex ?? ""); main.dataset.notePinkSurface = store.world.entities["note-pink"]?.surfaceId ?? ""; main.dataset.createdSheetSurface = store.world.entities["sheet-created-2"]?.surfaceId ?? ""; main.dataset.orangeAttachments = String(entities.filter((item) => item.attachment?.catId === "cat-orange").length); main.dataset.selectedContourWidth = entity?.contour ? String(Math.max(...entity.contour.map((point) => point.x)) - Math.min(...entity.contour.map((point) => point.x))) : ""; renderer.render(store.world, ui, events); const debug = root.querySelector(".debug"); if (debug) { const stats = renderer.stats; debug.textContent = `objects ${stats.displayObjects} · cache ${stats.textureCacheSize} · rebuilds ${stats.cacheRebuilds} · culled ${stats.culledObjects} · ${stats.frameTime.toFixed(1)} ms`; } };
-const messages = { CYCLE_DETECTED: "Нельзя вложить объект в самого себя", OUTSIDE_PLACEMENT_AREA: "Здесь объект разместить нельзя", TARGET_NOT_VISIBLE: "Эта поверхность скрыта", ACTION_IN_PROGRESS: "Дождитесь окончания анимации", CONTOUR_NOT_CLOSED: "Замкните контур: вернитесь ножницами к началу", CONTOUR_SELF_INTERSECTS: "Контур пересекает сам себя", CONTOUR_TOO_SMALL: "Контур слишком маленький", INVALID_CONTOUR: "Нужно обвести область минимум тремя точками", WEARABLE_ZONE_NOT_FOUND: "Одежда должна пересекать силуэт кота", DRAW_CONTOUR: "Выберите ножницы и обведите одежду", INVALID_JSON: "Файл повреждён или не является JSON", INVALID_FORMAT: "Неизвестный формат сохранения", INVALID_SAVE: "Сохранение повреждено", MISSING_TEMPLATE: "В сохранении используется недоступный шаблон", UNSUPPORTED_SCHEMA_VERSION: "Сохранение создано более новой версией", FILE_TOO_LARGE: "Файл слишком большой", FILE_READ_FAILED: "Не удалось прочитать файл", STORAGE_UNAVAILABLE: "Автосохранение недоступно", STORAGE_QUOTA_EXCEEDED: "Для автосохранения не хватает места" }; let timer; function notify(code) { if (import.meta.env.DEV) console.warn("Paper Cat World:", code); toast.textContent = messages[code] || "Действие невозможно"; toast.classList.add("show"); clearTimeout(timer); timer = setTimeout(() => toast.classList.remove("show"), 2600); }
-store.subscribe(({ events }) => { autosave.prepare(store.world); update(events); }); new InteractionController({ canvas: renderer.app.canvas, renderer, store, ui, update, notify, trace });
-const editor = new DrawingEditor({ element: root.querySelector(".editor"), store, notify, onClose: update, template: templates["paper-cat-v1"] });
+const root = document.querySelector("#app");
+const appAbortController = new AbortController();
+root.innerHTML = `<main><section class="stage" aria-label="Бумажный стол"></section><header><div><strong>Бумажный мир</strong><span> двигайте детали и камеру</span></div><div class="create-actions"><button data-action="new-world">Начать новый мир</button><button data-action="new-cat">Новый кот</button><button data-action="new-wearable">Новая одежда</button><button data-action="new-sheet">Новый лист</button><button data-action="new-notebook">Новая тетрадь</button><button data-action="fit">Показать весь стол</button><button data-action="export">Сохранить</button><button data-action="import">Загрузить</button><button data-action="trace" title="Скачать диагностический трейс">Скачать трейс</button><input data-import type="file" accept="application/json,.json" hidden></div></header><aside hidden><b data-label></b><button data-action="draw">Рисовать</button><button data-action="sheet-inside">Внутри</button><button data-action="sheet-top">Сверху</button><button data-action="sheet-bottom">Снизу</button><button data-action="toggle">Открыть</button><button data-action="previous">← Комната</button><button data-action="next">Комната →</button><button data-action="detach">Снять</button><button data-action="left" aria-label="Повернуть против часовой стрелки">↶</button><button data-action="right" aria-label="Повернуть по часовой стрелке">↷</button><button data-action="delete">Удалить</button><button data-action="clear">Снять выбор</button></aside><div class="editor" hidden><nav aria-label="Инструменты рисования"><button data-tool="brush" class="active">Кисть</button><button data-tool="eraser">Ластик</button><button data-tool="scissors">✂ Контур</button><label>Цвет <input data-color type="color" value="#3a312e"></label><label>Размер <input data-size type="range" min="2" max="32" value="8"></label><button data-action="undo" aria-label="Отменить">↶</button><button data-action="redo">Повторить</button><button data-action="done">Готово</button><button data-action="close">Отмена</button></nav></div><div class="toast" role="status"></div></main>`;
+if (import.meta.env.DEV)
+  root
+    .querySelector("main")
+    .insertAdjacentHTML(
+      "beforeend",
+      `<div class="debug" data-testid="debug-stats" aria-label="Статистика renderer"></div>`,
+    );
+const stage = root.querySelector(".stage"),
+  panel = root.querySelector("aside"),
+  toast = root.querySelector(".toast");
+const templates = await loadCatTemplates().catch((error) => {
+  const alert = document.createElement("div");
+  alert.setAttribute("role", "alert");
+  alert.textContent =
+    "Не удалось загрузить шаблоны. Обновите страницу или проверьте подключение.";
+  stage.replaceChildren(alert);
+  throw error;
+});
+const initialWorld = createFixtureWorld(templates);
+const trace = new TraceRecorder();
+const store = new WorldStore(initialWorld, { trace });
+const autosave = new AutosaveService({
+  serialize: serializeWorld,
+  onError: (error) => notify(error.code),
+});
+const renderer = new PixiWorldRenderer(stage);
+const ui = {
+  selectedEntityId: null,
+  interaction: { mode: "idle", pointerIds: [], dragPreview: null },
+  camera: renderer.camera,
+  dragPreview: null,
+};
+await renderer.init();
+const update = (events = []) => {
+  if (ui.selectedEntityId && !store.world.entities[ui.selectedEntityId])
+    ui.selectedEntityId = null;
+  const entity = store.world.entities[ui.selectedEntityId];
+  panel.hidden = !entity;
+  panel.querySelector("[data-action=draw]").hidden = !entity?.drawingId;
+  panel.querySelector("[data-action=detach]").hidden = !entity?.attachment;
+  for (const action of ["sheet-inside", "sheet-top", "sheet-bottom"])
+    panel.querySelector(`[data-action=${action}]`).hidden =
+      entity?.kind !== "sheet";
+  panel.querySelector("[data-action=toggle]").hidden = ![
+    "sheet",
+    "notebook",
+  ].includes(entity?.kind);
+  panel.querySelector("[data-action=toggle]").textContent =
+    entity?.state === "open" ? "Закрыть" : "Открыть";
+  for (const action of ["previous", "next"])
+    panel.querySelector(`[data-action=${action}]`).hidden =
+      entity?.kind !== "notebook" || entity.state !== "open";
+  if (entity)
+    panel.querySelector("[data-label]").textContent = entity.label || entity.id;
+  if (import.meta.env.DEV) updateDiagnostics(entity);
+  renderer.render(store.world, ui, events);
+  const debug = root.querySelector(".debug");
+  if (debug) {
+    const stats = renderer.stats;
+    debug.textContent = `objects ${stats.displayObjects} · cache ${stats.textureCacheSize} · rebuilds ${stats.cacheRebuilds} · culled ${stats.culledObjects} · ${stats.frameTime.toFixed(1)} ms`;
+  }
+};
+function updateDiagnostics(entity) {
+  const main = root.querySelector("main"),
+    entities = Object.values(store.world.entities);
+  main.dataset.cameraZoom = String(renderer.camera.zoom);
+  main.dataset.entityCount = String(entities.length);
+  main.dataset.catCount = String(
+    entities.filter((item) => item.kind === "cat").length,
+  );
+  main.dataset.wearableCount = String(
+    entities.filter((item) => item.wearable).length,
+  );
+  main.dataset.attachmentCat = entity?.attachment?.catId ?? "";
+  main.dataset.selectedEntity = entity?.id ?? "";
+  main.dataset.selectedState = entity?.state ?? "";
+  main.dataset.activeSpread =
+    entity?.kind === "notebook" ? String(entity.activeSpreadIndex) : "";
+  main.dataset.visibleEntities = entities
+    .filter((item) => isEntityVisible(store.world, item.id))
+    .map((item) => item.id)
+    .sort()
+    .join(",");
+  main.dataset.catBlueSurface =
+    store.world.entities["cat-blue"]?.surfaceId ?? "";
+  main.dataset.catBlueZ = String(
+    store.world.entities["cat-blue"]?.zIndex ?? "",
+  );
+  main.dataset.notebookHomeAZ = String(
+    store.world.entities["notebook-home-a"]?.zIndex ?? "",
+  );
+  main.dataset.notePinkSurface =
+    store.world.entities["note-pink"]?.surfaceId ?? "";
+  main.dataset.createdSheetSurface =
+    store.world.entities["sheet-created-2"]?.surfaceId ?? "";
+  main.dataset.orangeAttachments = String(
+    entities.filter((item) => item.attachment?.catId === "cat-orange").length,
+  );
+  main.dataset.selectedContourWidth = entity?.contour
+    ? String(
+        Math.max(...entity.contour.map((point) => point.x)) -
+          Math.min(...entity.contour.map((point) => point.x)),
+      )
+    : "";
+}
+const messages = {
+  CYCLE_DETECTED: "Нельзя вложить объект в самого себя",
+  OUTSIDE_PLACEMENT_AREA: "Здесь объект разместить нельзя",
+  TARGET_NOT_VISIBLE: "Эта поверхность скрыта",
+  ACTION_IN_PROGRESS: "Дождитесь окончания анимации",
+  CONTOUR_NOT_CLOSED: "Замкните контур: вернитесь ножницами к началу",
+  CONTOUR_SELF_INTERSECTS: "Контур пересекает сам себя",
+  CONTOUR_TOO_SMALL: "Контур слишком маленький",
+  INVALID_CONTOUR: "Нужно обвести область минимум тремя точками",
+  WEARABLE_ZONE_NOT_FOUND: "Одежда должна пересекать силуэт кота",
+  DRAW_CONTOUR: "Выберите ножницы и обведите одежду",
+  INVALID_JSON: "Файл повреждён или не является JSON",
+  INVALID_FORMAT: "Неизвестный формат сохранения",
+  INVALID_SAVE: "Сохранение повреждено",
+  MISSING_TEMPLATE: "В сохранении используется недоступный шаблон",
+  UNSUPPORTED_SCHEMA_VERSION: "Сохранение создано более новой версией",
+  FILE_TOO_LARGE: "Файл слишком большой",
+  FILE_READ_FAILED: "Не удалось прочитать файл",
+  STORAGE_UNAVAILABLE: "Автосохранение недоступно",
+  STORAGE_QUOTA_EXCEEDED: "Для автосохранения не хватает места",
+  ENTITY_NOT_EMPTY: "Сначала уберите содержимое объекта",
+  INTERNAL_ERROR: "Внутренняя ошибка. Скачайте трейс и перезагрузите страницу",
+};
+let timer;
+function notify(code) {
+  if (import.meta.env.DEV) console.warn("Paper Cat World:", code);
+  toast.textContent = messages[code] || "Действие невозможно";
+  toast.classList.add("show");
+  clearTimeout(timer);
+  timer = setTimeout(() => toast.classList.remove("show"), 2600);
+}
+store.subscribe(({ events }) => {
+  autosave.prepare(store.world);
+  update(events);
+});
+const interaction = new InteractionController({
+  canvas: renderer.app.canvas,
+  renderer,
+  store,
+  ui,
+  update,
+  notify,
+  trace,
+});
+const editor = new DrawingEditor({
+  element: root.querySelector(".editor"),
+  store,
+  notify,
+  onClose: update,
+  template: templates["paper-cat-v1"],
+});
 root.querySelector("[data-action=new-world]").onclick = () => {
-  ui.selectedEntityId = null; ui.dragPreview = null;
+  if (
+    !confirm(
+      "Начать новый мир? Текущая сцена и история действий будут удалены.",
+    )
+  )
+    return;
+  ui.selectedEntityId = null;
+  ui.dragPreview = null;
   trace.reset();
   store.replace(initialWorld, [{ type: "worldCreated" }]);
   renderer.camera.fit(initialWorld.table.width, initialWorld.table.height);
 };
 root.querySelector("[data-action=new-cat]").onclick = () => editor.newCat();
-root.querySelector("[data-action=new-wearable]").onclick = () => editor.newWearable();
+root.querySelector("[data-action=new-wearable]").onclick = () =>
+  editor.newWearable();
 let createdId = 0;
-root.querySelector("[data-action=new-sheet]").onclick = () => { const id = `sheet-created-${++createdId}`, result = store.dispatch({ type: "createSheet", sheetId: id, insideSurfaceId: `${id}-inside`, outerTopSurfaceId: `${id}-top`, outerBottomSurfaceId: `${id}-bottom`, insideDrawingId: `${id}-inside-art`, outerTopDrawingId: `${id}-top-art`, outerBottomDrawingId: `${id}-bottom-art`, targetSurfaceId: store.world.table.surfaceId, transform: { x: 535 + createdId * 12, y: 330 + createdId * 8, rotation: 0, scale: 1 }, width: 300, height: 190 }); if (!result.ok) notify(result.error.code); else { ui.selectedEntityId = id; update(); } };
-root.querySelector("[data-action=new-notebook]").onclick = () => { const id = `notebook-created-${++createdId}`, result = store.dispatch({ type: "createNotebook", notebookId: id, coverSurfaceId: `${id}-cover`, coverDrawingId: `${id}-cover-art`, spreads: [1, 2, 3].map((n) => ({ id: `${id}-spread-${n}`, surfaceId: `${id}-room-${n}`, drawingId: `${id}-room-${n}-art` })), targetSurfaceId: store.world.table.surfaceId, transform: { x: 480 + createdId * 12, y: 290 + createdId * 8, rotation: 0, scale: 1 }, width: 380, height: 230 }); if (!result.ok) notify(result.error.code); else { ui.selectedEntityId = id; update(); } };
-addEventListener("keydown", (event) => { if (!root.querySelector(".editor").hidden || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return; event.preventDefault(); event.shiftKey ? store.redo() : store.undo(); });
-root.querySelector("[data-action=draw]").onclick = () => { const entity = store.world.entities[ui.selectedEntityId]; if (entity?.drawingId) editor.open(entity.drawingId, entity.id); };
-for (const [action, field] of [["sheet-inside", "insideSurfaceId"], ["sheet-top", "outerTopSurfaceId"], ["sheet-bottom", "outerBottomSurfaceId"]]) root.querySelector(`[data-action=${action}]`).onclick = () => { const entity = store.world.entities[ui.selectedEntityId], surface = store.world.surfaces[entity?.[field]]; if (surface?.drawingId) editor.open(surface.drawingId, entity.id); };
-root.querySelector("[data-action=toggle]").onclick = () => { const entity = store.world.entities[ui.selectedEntityId]; if (!entity) return; const command = entity.kind === "sheet" ? { type: "toggleSheet", sheetId: entity.id } : { type: "setNotebookState", notebookId: entity.id, state: entity.state === "open" ? "closed" : "open" }; const result = store.dispatch(command); if (!result.ok) notify(result.error.code); };
-for (const [action, delta] of [["previous", -1], ["next", 1]]) root.querySelector(`[data-action=${action}]`).onclick = () => { const entity = store.world.entities[ui.selectedEntityId]; if (entity?.kind !== "notebook") return; if (renderer.isActionInProgress(entity.id)) return notify("ACTION_IN_PROGRESS"); const index = entity.activeSpreadIndex + delta; if (index < 0 || index >= entity.spreads.length) return; const result = store.dispatch({ type: "setActiveSpread", notebookId: entity.id, activeSpreadIndex: index }); if (!result.ok) notify(result.error.code); };
-root.querySelector("[data-action=fit]").onclick = () => { renderer.resize(); renderer.camera.fit(store.world.table.width, store.world.table.height); update(); };
+root.querySelector("[data-action=new-sheet]").onclick = () => {
+  const id = `sheet-created-${++createdId}`,
+    result = store.dispatch({
+      type: "createSheet",
+      sheetId: id,
+      insideSurfaceId: `${id}-inside`,
+      outerTopSurfaceId: `${id}-top`,
+      outerBottomSurfaceId: `${id}-bottom`,
+      insideDrawingId: `${id}-inside-art`,
+      outerTopDrawingId: `${id}-top-art`,
+      outerBottomDrawingId: `${id}-bottom-art`,
+      targetSurfaceId: store.world.table.surfaceId,
+      transform: {
+        x: 535 + createdId * 12,
+        y: 330 + createdId * 8,
+        rotation: 0,
+        scale: 1,
+      },
+      width: 300,
+      height: 190,
+    });
+  if (!result.ok) notify(result.error.code);
+  else {
+    ui.selectedEntityId = id;
+    update();
+  }
+};
+root.querySelector("[data-action=new-notebook]").onclick = () => {
+  const id = `notebook-created-${++createdId}`,
+    result = store.dispatch({
+      type: "createNotebook",
+      notebookId: id,
+      coverSurfaceId: `${id}-cover`,
+      coverDrawingId: `${id}-cover-art`,
+      spreads: [1, 2, 3].map((n) => ({
+        id: `${id}-spread-${n}`,
+        surfaceId: `${id}-room-${n}`,
+        drawingId: `${id}-room-${n}-art`,
+      })),
+      targetSurfaceId: store.world.table.surfaceId,
+      transform: {
+        x: 480 + createdId * 12,
+        y: 290 + createdId * 8,
+        rotation: 0,
+        scale: 1,
+      },
+      width: 380,
+      height: 230,
+    });
+  if (!result.ok) notify(result.error.code);
+  else {
+    ui.selectedEntityId = id;
+    update();
+  }
+};
+addEventListener(
+  "keydown",
+  (event) => {
+    if (
+      !root.querySelector(".editor").hidden ||
+      !(event.ctrlKey || event.metaKey) ||
+      event.key.toLowerCase() !== "z"
+    )
+      return;
+    event.preventDefault();
+    event.shiftKey ? store.redo() : store.undo();
+  },
+  { signal: appAbortController.signal },
+);
+root.querySelector("[data-action=draw]").onclick = () => {
+  const entity = store.world.entities[ui.selectedEntityId];
+  if (entity?.drawingId) editor.open(entity.drawingId, entity.id);
+};
+for (const [action, field] of [
+  ["sheet-inside", "insideSurfaceId"],
+  ["sheet-top", "outerTopSurfaceId"],
+  ["sheet-bottom", "outerBottomSurfaceId"],
+])
+  root.querySelector(`[data-action=${action}]`).onclick = () => {
+    const entity = store.world.entities[ui.selectedEntityId],
+      surface = store.world.surfaces[entity?.[field]];
+    if (surface?.drawingId) editor.open(surface.drawingId, entity.id);
+  };
+root.querySelector("[data-action=toggle]").onclick = () => {
+  const entity = store.world.entities[ui.selectedEntityId];
+  if (!entity) return;
+  const command =
+    entity.kind === "sheet"
+      ? { type: "toggleSheet", sheetId: entity.id }
+      : {
+          type: "setNotebookState",
+          notebookId: entity.id,
+          state: entity.state === "open" ? "closed" : "open",
+        };
+  const result = store.dispatch(command);
+  if (!result.ok) notify(result.error.code);
+};
+for (const [action, delta] of [
+  ["previous", -1],
+  ["next", 1],
+])
+  root.querySelector(`[data-action=${action}]`).onclick = () => {
+    const entity = store.world.entities[ui.selectedEntityId];
+    if (entity?.kind !== "notebook") return;
+    if (renderer.isActionInProgress(entity.id))
+      return notify("ACTION_IN_PROGRESS");
+    const index = entity.activeSpreadIndex + delta;
+    if (index < 0 || index >= entity.spreads.length) return;
+    const result = store.dispatch({
+      type: "setActiveSpread",
+      notebookId: entity.id,
+      activeSpreadIndex: index,
+    });
+    if (!result.ok) notify(result.error.code);
+  };
+root.querySelector("[data-action=fit]").onclick = () => {
+  renderer.resize();
+  renderer.camera.fit(store.world.table.width, store.world.table.height);
+  update();
+};
 root.querySelector("[data-action=export]").onclick = () => {
   try {
-    const json = `${JSON.stringify(serializeWorld(store.world), null, 2)}\n`, url = URL.createObjectURL(new Blob([json], { type: "application/json;charset=utf-8" })), link = document.createElement("a");
-    link.href = url; link.download = `paper-cat-world-${new Date().toISOString().slice(0, 10)}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
-  } catch (error) { notify(error.code); }
+    const json = `${JSON.stringify(serializeWorld(store.world), null, 2)}\n`,
+      url = URL.createObjectURL(
+        new Blob([json], { type: "application/json;charset=utf-8" }),
+      ),
+      link = document.createElement("a");
+    link.href = url;
+    link.download = `paper-cat-world-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch (error) {
+    notify(error.code);
+  }
 };
 root.querySelector("[data-action=trace]").onclick = () => {
-  const json = `${JSON.stringify(trace.export(serializeWorld(store.world)), null, 2)}\n`, url = URL.createObjectURL(new Blob([json], { type: "application/json;charset=utf-8" })), link = document.createElement("a");
-  link.href = url; link.download = `paper-cat-world-trace-${new Date().toISOString().replaceAll(":", "-").slice(0, 19)}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
+  const json = `${JSON.stringify(trace.export(serializeWorld(store.world)), null, 2)}\n`,
+    url = URL.createObjectURL(
+      new Blob([json], { type: "application/json;charset=utf-8" }),
+    ),
+    link = document.createElement("a");
+  link.href = url;
+  link.download = `paper-cat-world-trace-${new Date().toISOString().replaceAll(":", "-").slice(0, 19)}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 };
-const importInput = root.querySelector("[data-import]"); root.querySelector("[data-action=import]").onclick = () => { importInput.value = ""; importInput.click(); };
-const exceedsImportBudget = (world) => Object.keys(world.entities).length > 5000 || Object.values(world.drawings).reduce((sum, drawing) => sum + drawing.strokes.length, 0) > 20000 || Object.values(world.drawings).reduce((sum, drawing) => sum + drawing.strokes.reduce((count, stroke) => count + stroke.points.length, 0), 0) > 500000;
+const importInput = root.querySelector("[data-import]");
+root.querySelector("[data-action=import]").onclick = () => {
+  importInput.value = "";
+  importInput.click();
+};
+const exceedsImportBudget = (world) =>
+  Object.keys(world.entities).length > 5000 ||
+  Object.values(world.drawings).reduce(
+    (sum, drawing) => sum + drawing.strokes.length,
+    0,
+  ) > 20000 ||
+  Object.values(world.drawings).reduce(
+    (sum, drawing) =>
+      sum +
+      drawing.strokes.reduce(
+        (count, stroke) => count + stroke.points.length,
+        0,
+      ),
+    0,
+  ) > 500000;
 importInput.onchange = async () => {
-  const file = importInput.files?.[0]; if (!file) return;
+  const file = importInput.files?.[0];
+  if (!file) return;
   if (file.size > 10 * 1024 * 1024) return notify("FILE_TOO_LARGE");
-  let text; try { text = await file.text(); } catch { return notify("FILE_READ_FAILED"); }
-  const loaded = loadWorld(text, { templates }); if (!loaded.ok) return notify(loaded.error.code); if (exceedsImportBudget(loaded.world)) return notify("FILE_TOO_LARGE");
-  ui.selectedEntityId = null; ui.dragPreview = null; store.replace(loaded.world, [{ type: "worldImported" }]); renderer.camera.fit(loaded.world.table.width, loaded.world.table.height);
+  let text;
+  try {
+    text = await file.text();
+  } catch {
+    return notify("FILE_READ_FAILED");
+  }
+  const loaded = loadWorld(text, { templates });
+  if (!loaded.ok) return notify(loaded.error.code);
+  if (exceedsImportBudget(loaded.world)) return notify("FILE_TOO_LARGE");
+  ui.selectedEntityId = null;
+  ui.dragPreview = null;
+  store.replace(loaded.world, [{ type: "worldImported" }]);
+  renderer.camera.fit(loaded.world.table.width, loaded.world.table.height);
 };
-root.querySelector("[data-action=clear]").onclick = () => { ui.selectedEntityId = null; update(); };
-root.querySelector("[data-action=detach]").onclick = () => { const entity = store.world.entities[ui.selectedEntityId]; if (!entity?.attachment) return; const pose = getEntityWorldTransform(store.world, entity.id); const command = entity.wearable ? { type: "detachWearable", wearableId: entity.id, targetSurfaceId: store.world.table.surfaceId, worldTransform: { ...pose, x: pose.x + 45, y: pose.y + 25 } } : { type: "releaseHeldEntity", entityId: entity.id, targetSurfaceId: store.world.table.surfaceId, worldTransform: { ...pose, x: pose.x + 45, y: pose.y + 25 } }; const result = store.dispatch(command); if (!result.ok) notify(result.error.code); };
-for (const [action, delta] of [["left", -Math.PI / 12], ["right", Math.PI / 12]]) root.querySelector(`[data-action=${action}]`).onclick = () => { const id = ui.selectedEntityId; if (!id) return; const pose = getEntityWorldTransform(store.world, id); store.dispatch({ type: "moveEntityInWorld", entityId: id, targetSurfaceId: store.world.entities[id].surfaceId, transform: { ...pose, rotation: pose.rotation + delta }, zPolicy: "preserve" }); };
-addEventListener("pagehide", () => autosave.flush());
-new ResizeObserver(() => update()).observe(stage); renderer.resize(); renderer.camera.fit(store.world.table.width, store.world.table.height); update();
+root.querySelector("[data-action=clear]").onclick = () => {
+  ui.selectedEntityId = null;
+  update();
+};
+root.querySelector("[data-action=delete]").onclick = () => {
+  const entityId = ui.selectedEntityId;
+  if (!entityId) return;
+  const result = store.dispatch({ type: "deleteEntity", entityId });
+  if (!result.ok) notify(result.error.code);
+};
+root.querySelector("[data-action=detach]").onclick = () => {
+  const entity = store.world.entities[ui.selectedEntityId];
+  if (!entity?.attachment) return;
+  const pose = getEntityWorldTransform(store.world, entity.id);
+  const command = entity.wearable
+    ? {
+        type: "detachWearable",
+        wearableId: entity.id,
+        targetSurfaceId: store.world.table.surfaceId,
+        worldTransform: { ...pose, x: pose.x + 45, y: pose.y + 25 },
+      }
+    : {
+        type: "releaseHeldEntity",
+        entityId: entity.id,
+        targetSurfaceId: store.world.table.surfaceId,
+        worldTransform: { ...pose, x: pose.x + 45, y: pose.y + 25 },
+      };
+  const result = store.dispatch(command);
+  if (!result.ok) notify(result.error.code);
+};
+for (const [action, delta] of [
+  ["left", -Math.PI / 12],
+  ["right", Math.PI / 12],
+])
+  root.querySelector(`[data-action=${action}]`).onclick = () => {
+    const id = ui.selectedEntityId;
+    if (!id) return;
+    const pose = getEntityWorldTransform(store.world, id);
+    const result = store.dispatch({
+      type: "moveEntityInWorld",
+      entityId: id,
+      targetSurfaceId: store.world.entities[id].surfaceId,
+      transform: { ...pose, rotation: pose.rotation + delta },
+      zPolicy: "preserve",
+    });
+    if (!result.ok) notify(result.error.code);
+  };
+addEventListener("pagehide", () => autosave.flush(), {
+  signal: appAbortController.signal,
+});
+const stageResizeObserver = new ResizeObserver(() => update());
+stageResizeObserver.observe(stage);
+renderer.resize();
+renderer.camera.fit(store.world.table.width, store.world.table.height);
+update();
 const saved = autosave.read();
 if (saved !== null) {
   const loaded = loadWorld(saved, { templates });
   if (loaded.ok) {
-    ui.selectedEntityId = null; store.replace(loaded.world, [{ type: "worldRestored" }]); renderer.camera.fit(loaded.world.table.width, loaded.world.table.height);
+    ui.selectedEntityId = null;
+    store.replace(loaded.world, [{ type: "worldRestored" }]);
+    renderer.camera.fit(loaded.world.table.width, loaded.world.table.height);
   } else notify(loaded.error.code);
 }
+if (import.meta.hot)
+  import.meta.hot.dispose(() => {
+    appAbortController.abort();
+    stageResizeObserver.disconnect();
+    interaction.destroy();
+    editor.destroy();
+    renderer.destroy();
+  });

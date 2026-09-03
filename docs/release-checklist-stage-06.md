@@ -15,8 +15,9 @@ Input coverage:
 
 Regression verification recorded on 2026-09-02 after the nested-sheet drop fix:
 
-- `npm test`: 77 tests passed across 13 files.
-- `npx playwright test --project=desktop-chromium`: 19 passed, 2 mobile-only scenarios skipped.
+- `npm test`: 78 tests passed across 13 files.
+- `npx playwright test --project=desktop-chromium`: 21 passed, 2 mobile-only scenarios skipped.
 - The previously failing `nests one sheet in another and moves the hidden tree` scenario passes.
 - `npm run build`: production bundle succeeds; the existing 500 kB chunk-size warning remains.
 - `npm run test:production`: standalone production preview passes after the drawing `RenderTexture` cache change.
+- Full `npm run test:e2e`: 56 passed across desktop Chromium, desktop Firefox and mobile WebKit; 13 intentionally project-specific scenarios skipped.
